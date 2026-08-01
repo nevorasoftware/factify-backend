@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Emisor {
+  id                     Int          @id @default(autoincrement())
+  nit                    String       @unique @db.VarChar(14)
+  nrc                    String?      @db.VarChar(10)
+  nombre_comercial       String?      @db.VarChar(150)
+  razon_social           String?      @db.VarChar(150)
+  cod_actividad          String?      @db.VarChar(6)
+  desc_actividad         String?      @db.VarChar(150)
+  cod_establecimiento_mh String?      @default("0000") @db.VarChar(4)
+  cod_punto_venta_mh     String?      @default("0000") @db.VarChar(4)
+  direccion              Json?
+  telefono               String?      @db.VarChar(20)
+  correo                 String?      @db.VarChar(100)
+  pwd_mh                 String?      @db.VarChar(255)
+  pwd_firmador           String?      @db.VarChar(255)
+  created_at             DateTime?    @default(now()) @db.Timestamp(6)
+  ambiente               String?      @default("00") @db.VarChar(2)
+  dtes_visibles          Json?
+  password               String?      @db.VarChar(255)
+  clientes               Cliente[]
+  compras                Compra[]
+  dtes                   DteEmitido[]
+  productos              Producto[]
+
+  @@map("emisores")
+}
+
+model Cliente {
+  id               Int          @id @default(autoincrement())
+  emisor_id        Int?
+  tipo_documento   String       @db.VarChar(2)
+  num_documento    String       @db.VarChar(20)
+  nrc              String?      @db.VarChar(10)
+  nombre           String       @db.VarChar(200)
+  nombre_comercial String?      @db.VarChar(150)
+  cod_actividad    String?      @db.VarChar(6)
+  desc_actividad   String?      @db.VarChar(150)
+  correo           String?      @db.VarChar(100)
+  telefono         String?      @db.VarChar(20)
+  direccion        Json?
+  created_at       DateTime?    @default(now()) @db.Timestamp(6)
+  emisor           Emisor?      @relation(fields: [emisor_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  dtes             DteEmitido[]
+
+  @@unique([emisor_id, num_documento])
+  @@map("clientes")
+}
+
+model CatalogoMh {
+  id            Int      @id @default(autoincrement())
+  tipo_catalogo String   @db.VarChar(50)
+  codigo        String   @db.VarChar(10)
+  valor         String   @db.VarChar(255)
+  activo        Boolean? @default(true)
+
+  @@unique([tipo_catalogo, codigo])
+  @@map("catalogos_mh")
+}
+
+model DteEmitido {
+  id                    Int       @id @default(autoincrement())
+  emisor_id             Int
+  cliente_id            Int?
+  tipo_dte              String    @db.VarChar(2)
+  codigo_generacion     String    @unique @db.Uuid
+  numero_control        String    @unique @db.VarChar(31)
+  sello_recepcion_mh    String?   @db.VarChar(40)
+  estado                String?   @default("PROCESANDO") @db.VarChar(20)
+  fecha_emision         DateTime  @db.Date
+  hora_emision          DateTime  @db.Time(6)
+  monto_total_operacion Decimal   @db.Decimal(12, 2)
+  total_pagar           Decimal   @db.Decimal(12, 2)
+  json_enviado          Json?
+  respuesta_mh          Json?
+  descripcion_rechazo   String?   @db.Text
+  created_at            DateTime? @default(now()) @db.Timestamp(6)
+  items                 DteItem[]
+  cliente               Cliente?  @relation(fields: [cliente_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  emisor                Emisor    @relation(fields: [emisor_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("dtes_emitidos")
+}
+
+model DteItem {
+  id              Int         @id @default(autoincrement())
+  dte_id          Int?
+  num_item        Int
+  cantidad        Decimal     @db.Decimal(10, 2)
+  descripcion     String      @db.VarChar(255)
+  precio_unitario Decimal     @db.Decimal(10, 2)
+  venta_gravada   Decimal?    @default(0) @db.Decimal(10, 2)
+  venta_exenta    Decimal?    @default(0) @db.Decimal(10, 2)
+  venta_nosujeta  Decimal?    @default(0) @db.Decimal(10, 2)
+  iva_item        Decimal?    @default(0) @db.Decimal(10, 2)
+  tributos        Json?
+  dte             DteEmitido? @relation(fields: [dte_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("dte_items")
+}
+
+model ConfiguracionSistema {
+  id          Int     @id @default(autoincrement())
+  clave       String  @unique @db.VarChar(50)
+  valor       String
+  descripcion String? @db.VarChar(255)
+
+  @@map("configuraciones_sistema")
+}
+
+model Producto {
+  id              Int       @id @default(autoincrement())
+  emisor_id       Int
+  codigo          String    @db.VarChar(50)
+  descripcion     String    @db.VarChar(255)
+  precio_unitario Decimal   @db.Decimal(10, 2)
+  tipo_item       Int       @default(1)
+  uni_medida      Int       @default(59)
+  created_at      DateTime? @default(now()) @db.Timestamp(6)
+  emisor          Emisor    @relation(fields: [emisor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([emisor_id, codigo])
+  @@map("productos")
+}
+
+model Compra {
+  id                  Int          @id @default(autoincrement())
+  emisor_id           Int
+  proveedor_nombre    String       @db.VarChar(200)
+  proveedor_documento String       @db.VarChar(20)
+  tipo_documento      String       @db.VarChar(2)
+  numero_documento    String       @db.VarChar(50)
+  fecha_compra        DateTime     @db.Date
+  monto_total         Decimal      @db.Decimal(12, 2)
+  created_at          DateTime?    @default(now()) @db.Timestamp(6)
+  items               CompraItem[]
+  emisor              Emisor       @relation(fields: [emisor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("compras")
+}
+
+model CompraItem {
+  id              Int     @id @default(autoincrement())
+  compra_id       Int
+  descripcion     String  @db.VarChar(255)
+  cantidad        Decimal @db.Decimal(10, 2)
+  precio_unitario Decimal @db.Decimal(10, 2)
+  total           Decimal @db.Decimal(10, 2)
+  compra          Compra  @relation(fields: [compra_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("compra_items")
+}
