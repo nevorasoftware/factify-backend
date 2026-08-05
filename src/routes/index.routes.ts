@@ -432,7 +432,7 @@ router.get('/dashboard/stats', authMiddleware, async (req: any, res: any) => {
       invalidado: 0
     };
 
-    countsByEstado.forEach(group => {
+    countsByEstado.forEach((group: any) => {
       const estado = (group.estado || '').toUpperCase();
       const count = group._count._all;
       if (estado === 'PROCESADO') stats.procesados = count;
@@ -481,7 +481,7 @@ router.get('/dashboard/stats', authMiddleware, async (req: any, res: any) => {
       '15': 0  // Comprobante de Donación
     };
 
-    countsByTipoDte.forEach(group => {
+    countsByTipoDte.forEach((group: any) => {
       const tipo = group.tipo_dte;
       if (tipo && conteoPorTipo[tipo] !== undefined) {
         conteoPorTipo[tipo] = group._count._all;

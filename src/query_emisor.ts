@@ -2,7 +2,7 @@ import prisma from './db/prisma';
 
 async function main() {
   const emisores = await prisma.emisor.findMany();
-  console.log('EMISORES_RESULT:', JSON.stringify(emisores.map(e => ({
+  console.log('EMISORES_RESULT:', JSON.stringify(emisores.map((e: any) => ({
     id: e.id,
     nit: e.nit,
     correo: e.correo,
