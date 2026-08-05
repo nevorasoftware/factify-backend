@@ -56,7 +56,12 @@ router.post('/auth/login', async (req: any, res: any) => {
 
     const prisma = (await import('../db/prisma')).default;
     const emisor = await prisma.emisor.findFirst({
-      where: { correo: correo.trim() }
+      where: {
+        correo: {
+          equals: correo.trim(),
+          mode: 'insensitive'
+        }
+      }
     });
 
     if (!emisor) {
@@ -64,7 +69,7 @@ router.post('/auth/login', async (req: any, res: any) => {
     }
 
     // Validación de contraseña simple/plana para facilitar el mantenimiento por script SQL
-    if (emisor.password !== password) {
+    if (emisor.password !== password.trim()) {
       return res.status(401).json({ success: false, error: 'Credenciales inválidas (contraseña incorrecta)' });
     }
 
