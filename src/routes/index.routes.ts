@@ -50,7 +50,10 @@ export const authMiddleware = async (req: any, res: any, next: any) => {
 router.post('/auth/login', async (req: any, res: any) => {
   try {
     const { correo, password } = req.body;
+    console.log(`🔑 [LOGIN] Intento de login recibido para correo: "${correo}"`);
+
     if (!correo || !password) {
+      console.log('⚠️ [LOGIN] Correo o contraseña no provistos');
       return res.status(400).json({ success: false, error: 'Correo y contraseña son requeridos' });
     }
 
@@ -65,13 +68,17 @@ router.post('/auth/login', async (req: any, res: any) => {
     });
 
     if (!emisor) {
+      console.log(`⚠️ [LOGIN] Usuario con correo "${correo.trim()}" no existe en la base de datos.`);
       return res.status(401).json({ success: false, error: 'Credenciales inválidas (usuario no registrado)' });
     }
 
     // Validación de contraseña simple/plana para facilitar el mantenimiento por script SQL
     if (emisor.password !== password.trim()) {
+      console.log(`⚠️ [LOGIN] Contraseña incorrecta para usuario "${correo.trim()}".`);
       return res.status(401).json({ success: false, error: 'Credenciales inválidas (contraseña incorrecta)' });
     }
+
+    console.log(`✅ [LOGIN] Login exitoso para emisor ID: ${emisor.id} (${emisor.razon_social})`);
 
     // Generar token JWT stateless
     const token = generateToken({
