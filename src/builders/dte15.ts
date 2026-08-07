@@ -91,7 +91,7 @@ export async function construirDte15(req: any, versionDte: number, emisorDb: any
   };
 
   // 5. Secuencial de Control
-  let { numControl, needsGeneration } = sanearNumeroControl(
+  let { numControl, needsGeneration, codEstableUsed, codPuntoUsed } = sanearNumeroControl(
     req.body.identificacion?.numeroControl,
     '15',
     codEstable,
@@ -101,7 +101,14 @@ export async function construirDte15(req: any, versionDte: number, emisorDb: any
 
   if (needsGeneration) {
     numControl = await obtenerSiguienteCorrelativo('15', emisorDb.id, codEstable, codPunto, 1);
+    codEstableUsed = codEstable;
+    codPuntoUsed = codPunto;
   }
+
+  donatarioSanitized.codEstableMH = codEstableUsed;
+  donatarioSanitized.codEstable = codEstableUsed;
+  donatarioSanitized.codPuntoVentaMH = codPuntoUsed;
+  donatarioSanitized.codPuntoVenta = codPuntoUsed;
 
   const codGeneracion = req.body.identificacion?.codigoGeneracion
     ? req.body.identificacion.codigoGeneracion.toUpperCase()

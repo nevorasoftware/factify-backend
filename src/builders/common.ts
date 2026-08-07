@@ -32,13 +32,10 @@ export function sanearNumeroControl(
   codEstable: string,
   codPunto: string,
   emisorId: number
-): { numControl: string; needsGeneration: boolean } {
+): { numControl: string; needsGeneration: boolean; codEstableUsed: string; codPuntoUsed: string } {
   const expectedPattern = new RegExp(`^DTE-${tipoDte}-[A-Z0-9]{8}-[0-9]{15}$`);
   if (!numControl) {
-    return { numControl: '', needsGeneration: true };
-  }
-  if (expectedPattern.test(numControl)) {
-    return { numControl, needsGeneration: false };
+    return { numControl: '', needsGeneration: true, codEstableUsed: codEstable, codPuntoUsed: codPunto };
   }
 
   let cleaned = String(numControl).trim().toUpperCase();
@@ -50,24 +47,42 @@ export function sanearNumeroControl(
     const rawCorrelativo = cleanParts[cleanParts.length - 1];
     const rawEstablePunto = cleanParts.slice(0, cleanParts.length - 1).join('');
     let establePunto = rawEstablePunto.substring(0, 8);
-    if (establePunto.length < 8) {
+    let estUsed = codEstable;
+    let ptoUsed = codPunto;
+
+    if (establePunto.length === 8) {
+      estUsed = establePunto.substring(0, 4);
+      ptoUsed = establePunto.substring(4, 8);
+    } else {
       establePunto = `${codEstable}${codPunto}`;
     }
+
     const correlativoNum = parseInt(rawCorrelativo, 10);
     if (!isNaN(correlativoNum) && correlativoNum > 0) {
       const correlativo = correlativoNum.toString().padStart(15, '0');
       const finalNum = `DTE-${tipoDte}-${establePunto}-${correlativo}`;
-      return { numControl: finalNum, needsGeneration: !expectedPattern.test(finalNum) };
+      return {
+        numControl: finalNum,
+        needsGeneration: !expectedPattern.test(finalNum),
+        codEstableUsed: estUsed,
+        codPuntoUsed: ptoUsed
+      };
     }
   } else if (cleanParts.length === 1 && /^[0-9]+$/.test(cleanParts[0])) {
     const correlativoNum = parseInt(cleanParts[0], 10);
     if (!isNaN(correlativoNum) && correlativoNum > 0) {
       const correlativo = correlativoNum.toString().padStart(15, '0');
       const finalNum = `DTE-${tipoDte}-${codEstable}${codPunto}-${correlativo}`;
-      return { numControl: finalNum, needsGeneration: !expectedPattern.test(finalNum) };
+      return {
+        numControl: finalNum,
+        needsGeneration: !expectedPattern.test(finalNum),
+        codEstableUsed: codEstable,
+        codPuntoUsed: codPunto
+      };
     }
   }
-  return { numControl: '', needsGeneration: true };
+
+  return { numControl: '', needsGeneration: true, codEstableUsed: codEstable, codPuntoUsed: codPunto };
 }
 
 export async function obtenerSiguienteCorrelativo(
