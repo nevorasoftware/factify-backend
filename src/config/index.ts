@@ -21,6 +21,9 @@ export const config = {
     smtpSecure: process.env.SMTP_SECURE ? (process.env.SMTP_SECURE.trim() === 'true') : true,
     smtpUser: (process.env.SMTP_USER || '').trim(),
     smtpPass: (process.env.SMTP_PASS || '').replace(/\s+/g, ''),
+    clientId: (process.env.GMAIL_CLIENT_ID || '').trim(),
+    clientSecret: (process.env.GMAIL_CLIENT_SECRET || '').trim(),
+    refreshToken: (process.env.GMAIL_REFRESH_TOKEN || '').trim(),
     emailFrom: (process.env.EMAIL_FROM || '"Nevora Software DTE" <softwarenevora@gmail.com>').trim()
   }
 };

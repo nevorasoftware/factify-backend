@@ -25,7 +25,24 @@ let transporter: nodemailer.Transporter | null = null;
 
 function getTransporter() {
   if (!transporter) {
-    const { smtpHost, smtpPort, smtpSecure, smtpUser, smtpPass } = config.email;
+    const { smtpHost, smtpPort, smtpSecure, smtpUser, smtpPass, clientId, clientSecret, refreshToken } = config.email;
+
+    // Si se configuran credenciales OAuth2 para Gmail API (vía HTTPS)
+    if (clientId && clientSecret && refreshToken) {
+      console.log('📧 Utilizando Gmail API via OAuth2 (HTTPS)...');
+      transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          type: 'OAuth2',
+          user: smtpUser,
+          clientId: clientId,
+          clientSecret: clientSecret,
+          refreshToken: refreshToken
+        }
+      });
+      return transporter;
+    }
+
     const cleanHost = (smtpHost || 'smtp.gmail.com').trim().replace(/[^a-zA-Z0-9\.-]/g, '');
     if (!smtpUser || !smtpPass) {
       console.warn('⚠️ SMTP_USER o SMTP_PASS no están configurados en las variables de entorno. El envío de correos estará deshabilitado hasta configurarlos.');
