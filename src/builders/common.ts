@@ -43,6 +43,7 @@ export function sanearNumeroControl(
   const parts = cleaned.split('-');
   const cleanParts = parts.map(p => p.replace(/[^A-Z0-9]/g, '')).filter(p => p.length > 0);
 
+
   if (cleanParts.length >= 2) {
     const rawCorrelativo = cleanParts[cleanParts.length - 1];
     const rawEstablePunto = cleanParts.slice(0, cleanParts.length - 1).join('');
