@@ -2,8 +2,40 @@ import { v4 as uuidv4 } from 'uuid';
 
 export const round2 = (num: number) => Number((Math.round((num + Number.EPSILON) * 100) / 100).toFixed(2));
 
+export function formatearCodEstableMH(cod: string | undefined | null): string {
+  if (!cod) return "M001";
+  const str = String(cod).trim().toUpperCase();
+  if (/^(M|B|S|P)[0-9]{3}$/.test(str)) {
+    return str;
+  }
+  const digits = str.replace(/[^0-9]/g, '');
+  const num = parseInt(digits, 10);
+  if (isNaN(num) || num === 0) {
+    return "M001";
+  }
+  const letterMatch = str.match(/^[MBSP]/);
+  const prefix = letterMatch ? letterMatch[0] : (num === 1 ? "M" : "S");
+  return `${prefix}${num.toString().padStart(3, '0')}`;
+}
+
+export function formatearCodPuntoVentaMH(cod: string | undefined | null): string {
+  if (!cod) return "P001";
+  const str = String(cod).trim().toUpperCase();
+  if (/^P[0-9]{3}$/.test(str)) {
+    return str;
+  }
+  const digits = str.replace(/[^0-9]/g, '');
+  const num = parseInt(digits, 10);
+  if (isNaN(num) || num === 0) {
+    return "P001";
+  }
+  return `P${num.toString().padStart(3, '0')}`;
+}
+
 export function obtenerEmisorBase(emisorDb: any) {
   const dirEmisor = (emisorDb.direccion as any) || { departamento: "01", municipio: "01", complemento: "San Salvador, El Salvador" };
+  const estFormatted = formatearCodEstableMH(emisorDb.cod_establecimiento_mh);
+  const ptoFormatted = formatearCodPuntoVentaMH(emisorDb.cod_punto_venta_mh);
   return {
     nit: emisorDb.nit,
     nrc: emisorDb.nrc || "000000",
@@ -19,10 +51,10 @@ export function obtenerEmisorBase(emisorDb: any) {
     },
     telefono: emisorDb.telefono || "22222222",
     correo: emisorDb.correo || "correo@empresa.com",
-    codEstableMH: emisorDb.cod_establecimiento_mh || "0000",
-    codEstable: emisorDb.cod_establecimiento_mh || "0000",
-    codPuntoVentaMH: emisorDb.cod_punto_venta_mh || "0000",
-    codPuntoVenta: emisorDb.cod_punto_venta_mh || "0000",
+    codEstableMH: estFormatted,
+    codEstable: estFormatted,
+    codPuntoVentaMH: ptoFormatted,
+    codPuntoVenta: ptoFormatted,
   };
 }
 
@@ -33,9 +65,12 @@ export function sanearNumeroControl(
   codPunto: string,
   emisorId: number
 ): { numControl: string; needsGeneration: boolean; codEstableUsed: string; codPuntoUsed: string } {
-  const expectedPattern = new RegExp(`^DTE-${tipoDte}-[A-Z0-9]{8}-[0-9]{15}$`);
+  const estFormatted = formatearCodEstableMH(codEstable);
+  const ptoFormatted = formatearCodPuntoVentaMH(codPunto);
+  const expectedPattern = new RegExp(`^DTE-${tipoDte}-(M|B|S|P)[0-9]{3}P[0-9]{3}-[0-9]{15}$`);
+
   if (!numControl) {
-    return { numControl: '', needsGeneration: true, codEstableUsed: codEstable, codPuntoUsed: codPunto };
+    return { numControl: '', needsGeneration: true, codEstableUsed: estFormatted, codPuntoUsed: ptoFormatted };
   }
 
   let cleaned = String(numControl).trim().toUpperCase();
@@ -43,21 +78,18 @@ export function sanearNumeroControl(
   const parts = cleaned.split('-');
   const cleanParts = parts.map(p => p.replace(/[^A-Z0-9]/g, '')).filter(p => p.length > 0);
 
-
   if (cleanParts.length >= 2) {
     const rawCorrelativo = cleanParts[cleanParts.length - 1];
     const rawEstablePunto = cleanParts.slice(0, cleanParts.length - 1).join('');
-    let establePunto = rawEstablePunto.substring(0, 8);
-    let estUsed = codEstable;
-    let ptoUsed = codPunto;
+    let estUsed = estFormatted;
+    let ptoUsed = ptoFormatted;
 
-    if (establePunto.length === 8) {
-      estUsed = establePunto.substring(0, 4);
-      ptoUsed = establePunto.substring(4, 8);
-    } else {
-      establePunto = `${codEstable}${codPunto}`;
+    if (rawEstablePunto.length === 8) {
+      estUsed = formatearCodEstableMH(rawEstablePunto.substring(0, 4));
+      ptoUsed = formatearCodPuntoVentaMH(rawEstablePunto.substring(4, 8));
     }
 
+    const establePunto = `${estUsed}${ptoUsed}`;
     const correlativoNum = parseInt(rawCorrelativo, 10);
     if (!isNaN(correlativoNum) && correlativoNum > 0) {
       const correlativo = correlativoNum.toString().padStart(15, '0');
@@ -73,17 +105,18 @@ export function sanearNumeroControl(
     const correlativoNum = parseInt(cleanParts[0], 10);
     if (!isNaN(correlativoNum) && correlativoNum > 0) {
       const correlativo = correlativoNum.toString().padStart(15, '0');
-      const finalNum = `DTE-${tipoDte}-${codEstable}${codPunto}-${correlativo}`;
+      const establePunto = `${estFormatted}${ptoFormatted}`;
+      const finalNum = `DTE-${tipoDte}-${establePunto}-${correlativo}`;
       return {
         numControl: finalNum,
         needsGeneration: !expectedPattern.test(finalNum),
-        codEstableUsed: codEstable,
-        codPuntoUsed: codPunto
+        codEstableUsed: estFormatted,
+        codPuntoUsed: ptoFormatted
       };
     }
   }
 
-  return { numControl: '', needsGeneration: true, codEstableUsed: codEstable, codPuntoUsed: codPunto };
+  return { numControl: '', needsGeneration: true, codEstableUsed: estFormatted, codPuntoUsed: ptoFormatted };
 }
 
 export async function obtenerSiguienteCorrelativo(
@@ -93,6 +126,10 @@ export async function obtenerSiguienteCorrelativo(
   codPunto: string,
   correlativoInicial: number
 ): Promise<string> {
+  const estFormatted = formatearCodEstableMH(codEstable);
+  const ptoFormatted = formatearCodPuntoVentaMH(codPunto);
+  const establePunto = `${estFormatted}${ptoFormatted}`;
+
   let correlativoNum = correlativoInicial;
   try {
     const prisma = (await import('../db/prisma')).default;
@@ -114,7 +151,7 @@ export async function obtenerSiguienteCorrelativo(
     console.error(`⚠️ No se pudo obtener secuencial de BD para DTE ${tipoDte}, usando ${correlativoInicial}`);
   }
   const correlativo = correlativoNum.toString().padStart(15, '0');
-  return `DTE-${tipoDte}-${codEstable}${codPunto}-${correlativo}`;
+  return `DTE-${tipoDte}-${establePunto}-${correlativo}`;
 }
 
 export function obtenerIdentificacionBase(identificacionOriginal: any, tipoDte: string, numControl: string, codGeneracion: string, fecEmi: string, horEmi: string, emisorDb: any) {

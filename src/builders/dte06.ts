@@ -10,8 +10,8 @@ export async function construirDte06(req: any, versionDte: number, emisorDb: any
 
   const emisorSanitized = obtenerEmisorBase(emisorDb);
   // Hacienda no permite codEstable ni codPuntoVenta en emisor para DTE 06
-  delete emisorSanitized.codEstableMH;
-  delete emisorSanitized.codPuntoVentaMH;
+  delete (emisorSanitized as any).codEstableMH;
+  delete (emisorSanitized as any).codPuntoVentaMH;
   delete (emisorSanitized as any).codEstable;
   delete (emisorSanitized as any).codPuntoVenta;
 
