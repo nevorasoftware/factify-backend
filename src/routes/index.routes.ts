@@ -3,6 +3,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { enviarAlMH } from '../services/mh.service';
 import { config } from '../config';
 import { verifyToken, generateToken } from '../utils/jwt';
+import { generarJsonDteCompleto } from '../services/dte-json.service';
+import { generarPdfDte } from '../services/pdf.service';
+import { enviarCorreoDte } from '../services/email.service';
 
 const router = Router();
 
@@ -13,12 +16,18 @@ const round2 = (num: number) => Number((Math.round((num + Number.EPSILON) * 100)
 // =========================================================================
 export const authMiddleware = async (req: any, res: any, next: any) => {
   try {
+    let token: string | undefined;
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (req.query && req.query.token) {
+      token = String(req.query.token);
+    }
+
+    if (!token) {
       return res.status(401).json({ success: false, error: 'Token de acceso no proporcionado' });
     }
 
-    const token = authHeader.split(' ')[1];
     const decoded = verifyToken(token);
     if (!decoded) {
       return res.status(401).json({ success: false, error: 'Token inválido o expirado' });
@@ -347,17 +356,69 @@ const enviarDTEController = async (req: any, res: any) => {
       console.error('⚠️ Error guardando en BD (Prisma):', dbError.message || dbError);
     }
 
+    const dteCompleto = generarJsonDteCompleto(
+      documentoBase,
+      documentoBase.firmaElectronica || null,
+      resultadoMH.selloRecibido || null
+    );
+
+    let correoEnviado = false;
+
     if (resultadoMH.estado === 'RECHAZADO') {
       res.json({
         success: false,
         error: errorOcurrido ? `Fallo al procesar/enviar el DTE: ${errorOcurrido.message}` : 'Rechazado por el MH',
-        resultado: resultadoMH
+        resultado: resultadoMH,
+        dteCompleto
       });
     } else {
+      // Intentar enviar correo con PDF y JSON adjuntos
+      try {
+        const pdfBuffer = await generarPdfDte(dteCompleto);
+        const TIPOS_DTE_NOMBRES: Record<string, string> = {
+          '01': 'Factura',
+          '03': 'Comprobante de Crédito Fiscal',
+          '05': 'Nota de Crédito',
+          '06': 'Nota de Débito',
+          '07': 'Comprobante de Retención',
+          '08': 'Comprobante de Liquidación',
+          '09': 'Documento Contable de Liquidación',
+          '11': 'Factura de Exportación',
+          '14': 'Factura de Sujeto Excluido',
+          '15': 'Comprobante de Donación'
+        };
+
+        const tipoDteNombre = TIPOS_DTE_NOMBRES[documentoBase.identificacion?.tipoDte] || 'Factura';
+        const destinoCorreo = documentoBase.receptor?.correo || emisorDb.correo;
+        const nombreReceptor = documentoBase.receptor?.nombre || 'Cliente';
+        const nombreEmisor = documentoBase.emisor?.nombre || emisorDb.razon_social || 'Emisor';
+        const montoTotal = Number(documentoBase.resumen?.totalPagar || documentoBase.resumen?.montoTotalOperacion || 0).toFixed(2);
+
+        correoEnviado = await enviarCorreoDte({
+          destinoCorreo,
+          nombreReceptor,
+          nombreEmisor,
+          tipoDteNombre,
+          numeroControl: documentoBase.identificacion.numeroControl,
+          codigoGeneracion: documentoBase.identificacion.codigoGeneracion,
+          montoTotal,
+          pdfBuffer,
+          jsonCompleto: dteCompleto
+        });
+      } catch (mailErr: any) {
+        console.error('⚠️ Error secundario al preparar/enviar correo:', mailErr.message || mailErr);
+      }
+
       res.json({
         success: true,
         codigoGeneracion: documentoBase.identificacion.codigoGeneracion,
-        resultado: resultadoMH
+        numeroControl: documentoBase.identificacion.numeroControl,
+        selloRecibido: resultadoMH.selloRecibido || null,
+        resultado: resultadoMH,
+        dteCompleto,
+        correoEnviado,
+        pdfUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/pdf`,
+        jsonUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/json`
       });
     }
 
@@ -385,6 +446,124 @@ router.post('/comprobante-donacion', authMiddleware, enviarDTEController);
 // Rutas de eventos e historial de DTEs
 router.post('/evento-invalidacion', authMiddleware, (req, res) => res.json({ success: false, error: 'Not implemented real events yet' }));
 router.post('/evento-contingencia', authMiddleware, (req, res) => res.json({ success: false, error: 'Not implemented real events yet' }));
+
+// =========================================================================
+// RUTAS DE GENERACIÓN Y DESCARGA DE ARCHIVOS PDF Y JSON DTE
+// =========================================================================
+
+// Obtener JSON Completo ({codigoGeneracion}.json) por Codigo de Generacion o por ID
+router.get('/dtes/:codigoGeneracion/json', authMiddleware, async (req: any, res: any) => {
+  try {
+    const { codigoGeneracion } = req.params;
+    const prisma = (await import('../db/prisma')).default;
+
+    // Permitir buscar por UUID o por ID numérico
+    const isNum = /^[0-9]+$/.test(codigoGeneracion);
+    const dte = await prisma.dteEmitido.findFirst({
+      where: isNum
+        ? { id: parseInt(codigoGeneracion, 10), emisor_id: req.emisor.id }
+        : { codigo_generacion: codigoGeneracion.toUpperCase(), emisor_id: req.emisor.id }
+    });
+
+    if (!dte) {
+      return res.status(404).json({ success: false, error: 'DTE no encontrado' });
+    }
+
+    const jsonEnviado = (dte.json_enviado as any) || {};
+    const respuestaMH = (dte.respuesta_mh as any) || {};
+    const selloRecibido = dte.sello_recepcion_mh || respuestaMH.selloRecibido || null;
+
+    const dteCompleto = generarJsonDteCompleto(
+      jsonEnviado,
+      jsonEnviado.firmaElectronica || null,
+      selloRecibido
+    );
+
+    const fileName = `${dte.codigo_generacion || codigoGeneracion}.json`;
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(JSON.stringify(dteCompleto, null, 2));
+  } catch (error: any) {
+    console.error('Error enviando JSON DTE:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Obtener PDF ({codigoGeneracion}.pdf) por Codigo de Generacion o por ID
+router.get('/dtes/:codigoGeneracion/pdf', authMiddleware, async (req: any, res: any) => {
+  try {
+    const { codigoGeneracion } = req.params;
+    const prisma = (await import('../db/prisma')).default;
+
+    const isNum = /^[0-9]+$/.test(codigoGeneracion);
+    const dte = await prisma.dteEmitido.findFirst({
+      where: isNum
+        ? { id: parseInt(codigoGeneracion, 10), emisor_id: req.emisor.id }
+        : { codigo_generacion: codigoGeneracion.toUpperCase(), emisor_id: req.emisor.id }
+    });
+
+    if (!dte) {
+      return res.status(404).json({ success: false, error: 'DTE no encontrado' });
+    }
+
+    const jsonEnviado = (dte.json_enviado as any) || {};
+    const respuestaMH = (dte.respuesta_mh as any) || {};
+    const selloRecibido = dte.sello_recepcion_mh || respuestaMH.selloRecibido || null;
+
+    const dteCompleto = generarJsonDteCompleto(
+      jsonEnviado,
+      jsonEnviado.firmaElectronica || null,
+      selloRecibido
+    );
+
+    const pdfBuffer = await generarPdfDte(dteCompleto);
+
+    const fileName = `${dte.codigo_generacion || codigoGeneracion}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    res.send(pdfBuffer);
+  } catch (error: any) {
+    console.error('Error generando PDF DTE:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint POST para generar PDF al vuelo pasando el JSON del DTE
+router.post('/dtes/generar-pdf', authMiddleware, async (req: any, res: any) => {
+  try {
+    const dteCompleto = req.body;
+    if (!dteCompleto || !dteCompleto.identificacion) {
+      return res.status(400).json({ success: false, error: 'Estructura JSON de DTE inválida' });
+    }
+    const pdfBuffer = await generarPdfDte(dteCompleto);
+    const fileName = `${dteCompleto.identificacion.codigoGeneracion || 'dte'}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    res.send(pdfBuffer);
+  } catch (error: any) {
+    console.error('Error generando PDF al vuelo:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint POST para generar JSON Completo al vuelo
+router.post('/dtes/generar-json', authMiddleware, async (req: any, res: any) => {
+  try {
+    const { jsonEnviado, firmaElectronica, selloRecibido } = req.body;
+    const dteCompleto = generarJsonDteCompleto(
+      jsonEnviado || req.body,
+      firmaElectronica || req.body.firmaElectronica || null,
+      selloRecibido || req.body.selloRecibido || null
+    );
+    const fileName = `${dteCompleto.identificacion?.codigoGeneracion || 'dte'}.json`;
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(JSON.stringify(dteCompleto, null, 2));
+  } catch (error: any) {
+    console.error('Error generando JSON al vuelo:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // Consulta e historial filtrado por emisor
 router.post('/consulta-dte', authMiddleware, async (req: any, res: any) => {
