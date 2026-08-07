@@ -29,6 +29,8 @@ export async function firmarDocumento(nit: string, documentoJSON: any, pwdPri: s
 
   } catch (error: any) {
     console.error('Error en firmador local:', JSON.stringify(error.response?.data || error.message, null, 2));
-    throw new Error(`Fallo al firmar el documento para ${nit}. Asegúrate de que el Firmador esté corriendo en ${config.firmador.url} y la contraseña de la llave privada (pwd_firmador) sea correcta.`);
+    const errorMsg = error.response?.data?.body || error.response?.data?.mensaje || error.response?.data?.error || error.message;
+    const errorStr = typeof errorMsg === 'object' ? JSON.stringify(errorMsg) : errorMsg;
+    throw new Error(`Fallo al firmar el documento para ${nit} en ${config.firmador.url}. Detalle: ${errorStr}`);
   }
 }
