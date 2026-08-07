@@ -31,13 +31,18 @@ function getTransporter() {
       console.warn('⚠️ SMTP_USER o SMTP_PASS no están configurados en las variables de entorno. El envío de correos estará deshabilitado hasta configurarlos.');
       return null;
     }
+
+    const isSecure = smtpPort === 465 ? true : (smtpPort === 587 ? false : smtpSecure);
+
     transporter = nodemailer.createTransport({
       host: cleanHost,
       port: smtpPort,
-      secure: smtpSecure,
-      family: 4,
-      connectionTimeout: 10000,
-      socketTimeout: 15000,
+      secure: isSecure,
+      lookup: (hostname: string, _options: any, callback: any) => {
+        dns.lookup(hostname, { family: 4 }, callback);
+      },
+      connectionTimeout: 15000,
+      socketTimeout: 20000,
       auth: {
         user: smtpUser.trim(),
         pass: smtpPass.replace(/\s+/g, '')
@@ -144,6 +149,7 @@ export async function enviarCorreoDte(params: enviarCorreoDteParams): Promise<bo
     return true;
   } catch (error: any) {
     console.error(`❌ Error al enviar correo de DTE ${params.codigoGeneracion}:`, error.message || error);
+    transporter = null;
     return false;
   }
 }
