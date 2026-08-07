@@ -1,5 +1,13 @@
 import nodemailer from 'nodemailer';
+import dns from 'dns';
 import { config } from '../config';
+
+// Preferir IPv4 para evitar errores ENETUNREACH en contenedores sin soporte IPv6
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch (e) {
+  // Ignorar si no está soportado en la versión de Node
+}
 
 export interface enviarCorreoDteParams {
   destinoCorreo: string;
@@ -18,19 +26,23 @@ let transporter: nodemailer.Transporter | null = null;
 function getTransporter() {
   if (!transporter) {
     const { smtpHost, smtpPort, smtpSecure, smtpUser, smtpPass } = config.email;
+    const cleanHost = (smtpHost || 'smtp.gmail.com').trim().replace(/[^a-zA-Z0-9\.-]/g, '');
     if (!smtpUser || !smtpPass) {
       console.warn('⚠️ SMTP_USER o SMTP_PASS no están configurados en las variables de entorno. El envío de correos estará deshabilitado hasta configurarlos.');
       return null;
     }
     transporter = nodemailer.createTransport({
-      host: smtpHost,
+      host: cleanHost,
       port: smtpPort,
       secure: smtpSecure,
+      family: 4,
+      connectionTimeout: 10000,
+      socketTimeout: 15000,
       auth: {
-        user: smtpUser,
-        pass: smtpPass
+        user: smtpUser.trim(),
+        pass: smtpPass.replace(/\s+/g, '')
       }
-    });
+    } as any);
   }
   return transporter;
 }

@@ -365,14 +365,28 @@ const enviarDTEController = async (req: any, res: any) => {
     let correoEnviado = false;
 
     if (resultadoMH.estado === 'RECHAZADO') {
-      res.json({
+      return res.json({
         success: false,
         error: errorOcurrido ? `Fallo al procesar/enviar el DTE: ${errorOcurrido.message}` : 'Rechazado por el MH',
         resultado: resultadoMH,
         dteCompleto
       });
-    } else {
-      // Intentar enviar correo con PDF y JSON adjuntos
+    }
+
+    // Responder INMEDIATAMENTE al cliente para finalizar la transacción DTE
+    res.json({
+      success: true,
+      codigoGeneracion: documentoBase.identificacion.codigoGeneracion,
+      numeroControl: documentoBase.identificacion.numeroControl,
+      selloRecibido: resultadoMH.selloRecibido || null,
+      resultado: resultadoMH,
+      dteCompleto,
+      pdfUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/pdf`,
+      jsonUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/json`
+    });
+
+    // Proceso independiente e asíncrono en segundo plano (No bloquea la respuesta HTTP)
+    setImmediate(async () => {
       try {
         const pdfBuffer = await generarPdfDte(dteCompleto);
         const TIPOS_DTE_NOMBRES: Record<string, string> = {
@@ -394,7 +408,7 @@ const enviarDTEController = async (req: any, res: any) => {
         const nombreEmisor = documentoBase.emisor?.nombre || emisorDb.razon_social || 'Emisor';
         const montoTotal = Number(documentoBase.resumen?.totalPagar || documentoBase.resumen?.montoTotalOperacion || 0).toFixed(2);
 
-        correoEnviado = await enviarCorreoDte({
+        await enviarCorreoDte({
           destinoCorreo,
           nombreReceptor,
           nombreEmisor,
@@ -405,22 +419,10 @@ const enviarDTEController = async (req: any, res: any) => {
           pdfBuffer,
           jsonCompleto: dteCompleto
         });
-      } catch (mailErr: any) {
-        console.error('⚠️ Error secundario al preparar/enviar correo:', mailErr.message || mailErr);
+      } catch (bgErr: any) {
+        console.error('⚠️ Error en segundo plano al preparar/enviar correo:', bgErr.message || bgErr);
       }
-
-      res.json({
-        success: true,
-        codigoGeneracion: documentoBase.identificacion.codigoGeneracion,
-        numeroControl: documentoBase.identificacion.numeroControl,
-        selloRecibido: resultadoMH.selloRecibido || null,
-        resultado: resultadoMH,
-        dteCompleto,
-        correoEnviado,
-        pdfUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/pdf`,
-        jsonUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/json`
-      });
-    }
+    });
 
   } catch (error: any) {
     console.error('Controller Error:', error);
@@ -524,6 +526,85 @@ router.get('/dtes/:codigoGeneracion/pdf', authMiddleware, async (req: any, res: 
     res.send(pdfBuffer);
   } catch (error: any) {
     console.error('Error generando PDF DTE:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint para reenviar correo con PDF y JSON adjuntos
+router.post('/dtes/:codigoGeneracion/reenviar-correo', authMiddleware, async (req: any, res: any) => {
+  try {
+    const { codigoGeneracion } = req.params;
+    const { correoDestino } = req.body || {};
+    const prisma = (await import('../db/prisma')).default;
+
+    const isNum = /^[0-9]+$/.test(codigoGeneracion);
+    const dte = await prisma.dteEmitido.findFirst({
+      where: isNum
+        ? { id: parseInt(codigoGeneracion, 10), emisor_id: req.emisor.id }
+        : { codigo_generacion: codigoGeneracion.toUpperCase(), emisor_id: req.emisor.id }
+    });
+
+    if (!dte) {
+      return res.status(404).json({ success: false, error: 'DTE no encontrado' });
+    }
+
+    const jsonEnviado = (dte.json_enviado as any) || {};
+    const respuestaMH = (dte.respuesta_mh as any) || {};
+    const selloRecibido = dte.sello_recepcion_mh || respuestaMH.selloRecibido || null;
+
+    const dteCompleto = generarJsonDteCompleto(
+      jsonEnviado,
+      jsonEnviado.firmaElectronica || null,
+      selloRecibido
+    );
+
+    const pdfBuffer = await generarPdfDte(dteCompleto);
+
+    const TIPOS_DTE_NOMBRES: Record<string, string> = {
+      '01': 'Factura',
+      '03': 'Comprobante de Crédito Fiscal',
+      '05': 'Nota de Crédito',
+      '06': 'Nota de Débito',
+      '07': 'Comprobante de Retención',
+      '08': 'Comprobante de Liquidación',
+      '09': 'Documento Contable de Liquidación',
+      '11': 'Factura de Exportación',
+      '14': 'Factura de Sujeto Excluido',
+      '15': 'Comprobante de Donación'
+    };
+
+    const tipoDteNombre = TIPOS_DTE_NOMBRES[dteCompleto.identificacion?.tipoDte] || 'Factura';
+    const finalCorreo = correoDestino || dteCompleto.receptor?.correo || req.emisor.correo;
+    const nombreReceptor = dteCompleto.receptor?.nombre || 'Cliente';
+    const nombreEmisor = dteCompleto.emisor?.nombre || req.emisor.razon_social || 'Emisor';
+    const montoTotal = Number(dteCompleto.resumen?.totalPagar || dteCompleto.resumen?.montoTotalOperacion || 0).toFixed(2);
+
+    const enviado = await enviarCorreoDte({
+      destinoCorreo: finalCorreo,
+      nombreReceptor,
+      nombreEmisor,
+      tipoDteNombre,
+      numeroControl: dteCompleto.identificacion?.numeroControl || dte.numero_control,
+      codigoGeneracion: dteCompleto.identificacion?.codigoGeneracion || dte.codigo_generacion,
+      montoTotal,
+      pdfBuffer,
+      jsonCompleto: dteCompleto
+    });
+
+    if (enviado) {
+      return res.json({
+        success: true,
+        message: `Correo reenviado exitosamente a "${finalCorreo}"`,
+        destinoCorreo: finalCorreo
+      });
+    } else {
+      return res.status(500).json({
+        success: false,
+        error: `No se pudo enviar el correo a "${finalCorreo}". Verifica las credenciales SMTP.`
+      });
+    }
+  } catch (error: any) {
+    console.error('Error al reenviar correo de DTE:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

@@ -16,11 +16,11 @@ export const config = {
     url: process.env.FIRMADOR_URL || 'http://localhost:8113/firmardocumento/'
   },
   email: {
-    smtpHost: process.env.SMTP_HOST || 'smtp.gmail.com',
-    smtpPort: parseInt(process.env.SMTP_PORT || '465', 10),
-    smtpSecure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === 'true' : true,
-    smtpUser: process.env.SMTP_USER || '',
-    smtpPass: process.env.SMTP_PASS || '',
-    emailFrom: process.env.EMAIL_FROM || '"Nevora Software DTE" <softwarenevora@gmail.com>'
+    smtpHost: (process.env.SMTP_HOST || 'smtp.gmail.com').trim(),
+    smtpPort: parseInt((process.env.SMTP_PORT || '465').trim(), 10),
+    smtpSecure: process.env.SMTP_SECURE ? (process.env.SMTP_SECURE.trim() === 'true') : true,
+    smtpUser: (process.env.SMTP_USER || '').trim(),
+    smtpPass: (process.env.SMTP_PASS || '').replace(/\s+/g, ''),
+    emailFrom: (process.env.EMAIL_FROM || '"Nevora Software DTE" <softwarenevora@gmail.com>').trim()
   }
 };
