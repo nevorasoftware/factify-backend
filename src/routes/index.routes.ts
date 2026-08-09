@@ -393,7 +393,11 @@ const enviarDTEController = async (req: any, res: any) => {
     // Proceso independiente e asíncrono en segundo plano (No bloquea la respuesta HTTP)
     setImmediate(async () => {
       try {
-        const pdfBuffer = await generarPdfDte(dteCompleto);
+        const dtePdfObj = {
+          ...dteCompleto,
+          emisor: { ...dteCompleto.emisor, logoUrl: emisorDb.logo_url }
+        };
+        const pdfBuffer = await generarPdfDte(dtePdfObj);
         const TIPOS_DTE_NOMBRES: Record<string, string> = {
           '01': 'Factura',
           '03': 'Comprobante de Crédito Fiscal',
@@ -629,7 +633,8 @@ router.post('/dtes/:codigoGeneracion/reenviar-correo', authMiddleware, async (re
     const dte = await prisma.dteEmitido.findFirst({
       where: isNum
         ? { id: parseInt(codigoGeneracion, 10), emisor_id: req.emisor.id }
-        : { codigo_generacion: codigoGeneracion.toUpperCase(), emisor_id: req.emisor.id }
+        : { codigo_generacion: codigoGeneracion.toUpperCase(), emisor_id: req.emisor.id },
+      include: { emisor: true }
     });
 
     if (!dte) {
@@ -646,7 +651,11 @@ router.post('/dtes/:codigoGeneracion/reenviar-correo', authMiddleware, async (re
       selloRecibido
     );
 
-    const pdfBuffer = await generarPdfDte(dteCompleto);
+    const dtePdfObj = {
+      ...dteCompleto,
+      emisor: { ...dteCompleto.emisor, logoUrl: dte.emisor?.logo_url || req.emisor?.logo_url }
+    };
+    const pdfBuffer = await generarPdfDte(dtePdfObj);
 
     const TIPOS_DTE_NOMBRES: Record<string, string> = {
       '01': 'Factura',
