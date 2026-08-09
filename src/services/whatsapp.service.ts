@@ -107,6 +107,7 @@ export async function enviarWhatsappDteApi(params: enviarWhatsappDteParams): Pro
     );
 
     // 2. Enviar documento PDF como adjunto
+    console.log(`📄 Adjuntando PDF por WhatsApp: ${params.pdfUrl}`);
     await axios.post(
       `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
       {
@@ -116,8 +117,8 @@ export async function enviarWhatsappDteApi(params: enviarWhatsappDteParams): Pro
         type: 'document',
         document: {
           link: params.pdfUrl,
-          filename: `${codigoGeneracion}.pdf`,
-          caption: `Representación Gráfica ${params.tipoDteNombre}`
+          filename: `${params.numeroControl || codigoGeneracion}.pdf`,
+          caption: `📄 Representación Gráfica - ${params.tipoDteNombre}`
         }
       },
       {
@@ -129,7 +130,31 @@ export async function enviarWhatsappDteApi(params: enviarWhatsappDteParams): Pro
       }
     );
 
-    console.log(`✅ WhatsApp enviado con éxito vía Meta Cloud API a "${telefonoFormatted}".`);
+    // 3. Enviar documento JSON como adjunto
+    console.log(`💾 Adjuntando JSON por WhatsApp: ${params.jsonUrl}`);
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: telefonoFormatted,
+        type: 'document',
+        document: {
+          link: params.jsonUrl,
+          filename: `${params.numeroControl || codigoGeneracion}.json`,
+          caption: `💾 Archivo JSON Oficial Firmado - ${params.tipoDteNombre}`
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log(`✅ Mensaje, PDF y JSON enviados con éxito vía Meta Cloud API a "${telefonoFormatted}".`);
 
     return {
       success: true,

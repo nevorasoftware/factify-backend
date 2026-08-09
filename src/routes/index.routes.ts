@@ -451,10 +451,83 @@ router.post('/evento-invalidacion', authMiddleware, (req, res) => res.json({ suc
 router.post('/evento-contingencia', authMiddleware, (req, res) => res.json({ success: false, error: 'Not implemented real events yet' }));
 
 // =========================================================================
-// RUTAS DE GENERACIÓN Y DESCARGA DE ARCHIVOS PDF Y JSON DTE
+// RUTAS PÚBLICAS PARA DESCARGA DIRECTA DE ARCHIVOS (Para WhatsApp API y Clientes)
 // =========================================================================
+router.get('/public/dtes/:codigoGeneracion/json', async (req: any, res: any) => {
+  try {
+    const { codigoGeneracion } = req.params;
+    const prisma = (await import('../db/prisma')).default;
 
-// Obtener JSON Completo ({codigoGeneracion}.json) por Codigo de Generacion o por ID
+    const isNum = /^[0-9]+$/.test(codigoGeneracion);
+    const dte = await prisma.dteEmitido.findFirst({
+      where: isNum
+        ? { id: parseInt(codigoGeneracion, 10) }
+        : { codigo_generacion: codigoGeneracion.toUpperCase() }
+    });
+
+    if (!dte) {
+      return res.status(404).json({ success: false, error: 'DTE no encontrado' });
+    }
+
+    const jsonEnviado = (dte.json_enviado as any) || {};
+    const respuestaMH = (dte.respuesta_mh as any) || {};
+    const selloRecibido = dte.sello_recepcion_mh || respuestaMH.selloRecibido || null;
+
+    const dteCompleto = generarJsonDteCompleto(
+      jsonEnviado,
+      jsonEnviado.firmaElectronica || null,
+      selloRecibido
+    );
+
+    const fileName = `${dte.codigo_generacion || codigoGeneracion}.json`;
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(JSON.stringify(dteCompleto, null, 2));
+  } catch (error: any) {
+    console.error('Error enviando JSON DTE público:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/public/dtes/:codigoGeneracion/pdf', async (req: any, res: any) => {
+  try {
+    const { codigoGeneracion } = req.params;
+    const prisma = (await import('../db/prisma')).default;
+
+    const isNum = /^[0-9]+$/.test(codigoGeneracion);
+    const dte = await prisma.dteEmitido.findFirst({
+      where: isNum
+        ? { id: parseInt(codigoGeneracion, 10) }
+        : { codigo_generacion: codigoGeneracion.toUpperCase() }
+    });
+
+    if (!dte) {
+      return res.status(404).json({ success: false, error: 'DTE no encontrado' });
+    }
+
+    const jsonEnviado = (dte.json_enviado as any) || {};
+    const respuestaMH = (dte.respuesta_mh as any) || {};
+    const selloRecibido = dte.sello_recepcion_mh || respuestaMH.selloRecibido || null;
+
+    const dteCompleto = generarJsonDteCompleto(
+      jsonEnviado,
+      jsonEnviado.firmaElectronica || null,
+      selloRecibido
+    );
+
+    const pdfBuffer = await generarPdfDte(dteCompleto);
+
+    const fileName = `${dte.codigo_generacion || codigoGeneracion}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    res.send(pdfBuffer);
+  } catch (error: any) {
+    console.error('Error generando PDF DTE público:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Obtener JSON Completo ({codigoGeneracion}.json) por Codigo de Generacion o por ID (Con auth)
 router.get('/dtes/:codigoGeneracion/json', authMiddleware, async (req: any, res: any) => {
   try {
     const { codigoGeneracion } = req.params;
@@ -670,8 +743,8 @@ router.post('/dtes/:codigoGeneracion/reenviar-whatsapp', authMiddleware, async (
     const host = req.get('host');
     const baseUrl = `${protocol}://${host}`;
 
-    const pdfUrl = `${baseUrl}/api/dtes/${dte.codigo_generacion}/pdf`;
-    const jsonUrl = `${baseUrl}/api/dtes/${dte.codigo_generacion}/json`;
+    const pdfUrl = `${baseUrl}/api/public/dtes/${dte.codigo_generacion}/pdf`;
+    const jsonUrl = `${baseUrl}/api/public/dtes/${dte.codigo_generacion}/json`;
 
     const resultadoWa = await enviarWhatsappDteApi({
       destinoTelefono: finalTelefono,
