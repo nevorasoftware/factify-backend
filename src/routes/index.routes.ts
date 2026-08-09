@@ -6,6 +6,7 @@ import { verifyToken, generateToken } from '../utils/jwt';
 import { generarJsonDteCompleto } from '../services/dte-json.service';
 import { generarPdfDte } from '../services/pdf.service';
 import { enviarCorreoDte } from '../services/email.service';
+import { enviarWhatsappDteApi } from '../services/whatsapp.service';
 
 const router = Router();
 
@@ -605,6 +606,93 @@ router.post('/dtes/:codigoGeneracion/reenviar-correo', authMiddleware, async (re
     }
   } catch (error: any) {
     console.error('Error al reenviar correo de DTE:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint para reenviar DTE por WhatsApp (A demanda)
+router.post('/dtes/:codigoGeneracion/reenviar-whatsapp', authMiddleware, async (req: any, res: any) => {
+  try {
+    const { codigoGeneracion } = req.params;
+    const { telefonoDestino } = req.body || {};
+    const prisma = (await import('../db/prisma')).default;
+
+    const isNum = /^[0-9]+$/.test(codigoGeneracion);
+    const dte = await prisma.dteEmitido.findFirst({
+      where: isNum
+        ? { id: parseInt(codigoGeneracion, 10), emisor_id: req.emisor.id }
+        : { codigo_generacion: codigoGeneracion.toUpperCase(), emisor_id: req.emisor.id },
+      include: { cliente: true }
+    });
+
+    if (!dte) {
+      return res.status(404).json({ success: false, error: 'DTE no encontrado' });
+    }
+
+    const jsonEnviado = (dte.json_enviado as any) || {};
+    const respuestaMH = (dte.respuesta_mh as any) || {};
+    const selloRecibido = dte.sello_recepcion_mh || respuestaMH.selloRecibido || null;
+
+    const dteCompleto = generarJsonDteCompleto(
+      jsonEnviado,
+      jsonEnviado.firmaElectronica || null,
+      selloRecibido
+    );
+
+    const TIPOS_DTE_NOMBRES: Record<string, string> = {
+      '01': 'Factura',
+      '03': 'Comprobante de Crédito Fiscal',
+      '05': 'Nota de Crédito',
+      '06': 'Nota de Débito',
+      '07': 'Comprobante de Retención',
+      '08': 'Comprobante de Liquidación',
+      '09': 'Documento Contable de Liquidación',
+      '11': 'Factura de Exportación',
+      '14': 'Factura de Sujeto Excluido',
+      '15': 'Comprobante de Donación'
+    };
+
+    const tipoDteNombre = TIPOS_DTE_NOMBRES[dteCompleto.identificacion?.tipoDte] || 'Factura';
+    const finalTelefono = telefonoDestino || dteCompleto.receptor?.telefono || dte.cliente?.telefono;
+
+    if (!finalTelefono) {
+      return res.status(400).json({
+        success: false,
+        error: 'El cliente no tiene un número de teléfono registrado. Por favor especifique un número válido.'
+      });
+    }
+
+    const nombreReceptor = dteCompleto.receptor?.nombre || dte.cliente?.nombre || 'Cliente';
+    const nombreEmisor = dteCompleto.emisor?.nombre || req.emisor.razon_social || 'Emisor';
+    const montoTotal = Number(dteCompleto.resumen?.totalPagar || dteCompleto.resumen?.montoTotalOperacion || 0).toFixed(2);
+
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const host = req.get('host');
+    const baseUrl = `${protocol}://${host}`;
+
+    const pdfUrl = `${baseUrl}/api/dtes/${dte.codigo_generacion}/pdf`;
+    const jsonUrl = `${baseUrl}/api/dtes/${dte.codigo_generacion}/json`;
+
+    const resultadoWa = await enviarWhatsappDteApi({
+      destinoTelefono: finalTelefono,
+      nombreReceptor,
+      nombreEmisor,
+      tipoDteNombre,
+      numeroControl: dteCompleto.identificacion?.numeroControl || dte.numero_control,
+      codigoGeneracion: dteCompleto.identificacion?.codigoGeneracion || dte.codigo_generacion,
+      montoTotal,
+      pdfUrl,
+      jsonUrl
+    });
+
+    res.json({
+      success: true,
+      message: resultadoWa.message,
+      whatsappWebUrl: resultadoWa.whatsappWebUrl,
+      destinoTelefono: finalTelefono
+    });
+  } catch (error: any) {
+    console.error('Error al reenviar DTE por WhatsApp:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

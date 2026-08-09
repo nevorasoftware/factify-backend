@@ -25,5 +25,9 @@ export const config = {
     clientSecret: (process.env.GMAIL_CLIENT_SECRET || '').trim(),
     refreshToken: (process.env.GMAIL_REFRESH_TOKEN || '').trim(),
     emailFrom: (process.env.EMAIL_FROM || '"Nevora Software DTE" <softwarenevora@gmail.com>').trim()
+  },
+  whatsapp: {
+    token: (process.env.WHATSAPP_TOKEN || '').trim(),
+    phoneNumberId: (process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim()
   }
 };
