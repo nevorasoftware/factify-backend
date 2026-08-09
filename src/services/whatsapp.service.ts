@@ -133,16 +133,13 @@ export async function enviarWhatsappDteApi(params: enviarWhatsappDteParams): Pro
 
     return {
       success: true,
-      whatsappWebUrl,
       message: `¡Documento enviado por WhatsApp con éxito a ${telefonoFormatted}!`
     };
   } catch (error: any) {
-    console.error(`❌ Error al enviar por Meta WhatsApp Cloud API:`, error.response?.data || error.message || error);
-    // Retornar fallback con enlace directo si falla la API de Meta
-    return {
-      success: true,
-      whatsappWebUrl,
-      message: `No se pudo enviar automáticamente vía Meta Cloud API. Usa el enlace directo para enviar por WhatsApp.`
-    };
+    const errorDetails = error.response?.data?.error?.message || error.message || error;
+    console.error(`❌ Error al enviar por Meta WhatsApp Cloud API:`, errorDetails);
+    
+    // Si falla la API de Meta, lanzar el error exacto de Meta para corregir la causa raíz
+    throw new Error(`Error de Meta WhatsApp API: ${errorDetails}`);
   }
 }
