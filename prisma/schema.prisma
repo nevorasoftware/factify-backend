@@ -26,6 +26,7 @@ model Emisor {
   ambiente               String?      @default("00") @db.VarChar(2)
   dtes_visibles          Json?
   password               String?      @db.VarChar(255)
+  logo_url               String?      @db.Text
   clientes               Cliente[]
   compras                Compra[]
   dtes                   DteEmitido[]

@@ -55,6 +55,7 @@ export function obtenerEmisorBase(emisorDb: any) {
     codEstable: estFormatted,
     codPuntoVentaMH: ptoFormatted,
     codPuntoVenta: ptoFormatted,
+    logoUrl: emisorDb.logo_url || null,
   };
 }
 

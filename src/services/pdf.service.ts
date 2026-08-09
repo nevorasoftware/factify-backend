@@ -98,6 +98,21 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
 
     // 2. Encabezado principal
     let y = 18;
+
+    // Logo del Emisor (Top Left)
+    const logoUrl = emisor.logoUrl || emisor.logo_url;
+    if (logoUrl && typeof logoUrl === 'string') {
+      try {
+        if (logoUrl.startsWith('data:image')) {
+          const base64Data = logoUrl.replace(/^data:image\/\w+;base64,/, '');
+          const logoBuffer = Buffer.from(base64Data, 'base64');
+          doc.image(logoBuffer, 22, 12, { fit: [95, 35] });
+        }
+      } catch (e) {
+        console.error('Error al renderizar logo de emisor en PDF:', e);
+      }
+    }
+
     doc.fillColor('#000000');
     doc.fontSize(7).font('Helvetica-Bold').text('DOCUMENTO DE CONSULTA PORTAL OPERATIVO', 20, y, { width: 572, align: 'center' });
     y += 10;

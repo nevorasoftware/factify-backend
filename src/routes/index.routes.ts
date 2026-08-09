@@ -107,6 +107,7 @@ router.post('/auth/login', async (req: any, res: any) => {
         razonSocial: emisor.razon_social,
         nombreComercial: emisor.nombre_comercial,
         correo: emisor.correo,
+        logoUrl: emisor.logo_url,
         dtesVisibles: emisor.dtes_visibles || ["01", "03", "11"], // Default fallback
         ambiente: emisor.ambiente || "00"
       }
@@ -133,6 +134,7 @@ router.get('/auth/me', authMiddleware, async (req: any, res: any) => {
       direccion: emisor.direccion,
       telefono: emisor.telefono,
       correo: emisor.correo,
+      logoUrl: emisor.logo_url,
       dtesVisibles: emisor.dtes_visibles || ["01", "03", "11"],
       ambiente: emisor.ambiente || "00",
       codEstablecimientoMh: emisor.cod_establecimiento_mh || "0000",
@@ -148,7 +150,7 @@ router.put('/auth/config', authMiddleware, async (req: any, res: any) => {
     const { 
       nrc, razonSocial, nombreComercial, codActividad, descActividad,
       direccion, telefono, pwdMh, pwdFirmador, dtesVisibles, ambiente,
-      codEstablecimientoMh, codPuntoVentaMh
+      codEstablecimientoMh, codPuntoVentaMh, logoUrl
     } = req.body;
 
     const prisma = (await import('../db/prisma')).default;
@@ -168,7 +170,8 @@ router.put('/auth/config', authMiddleware, async (req: any, res: any) => {
         dtes_visibles: dtesVisibles !== undefined ? dtesVisibles : emisor.dtes_visibles,
         ambiente: ambiente !== undefined ? ambiente : emisor.ambiente,
         cod_establecimiento_mh: codEstablecimientoMh !== undefined ? codEstablecimientoMh : emisor.cod_establecimiento_mh,
-        cod_punto_venta_mh: codPuntoVentaMh !== undefined ? codPuntoVentaMh : emisor.cod_punto_venta_mh
+        cod_punto_venta_mh: codPuntoVentaMh !== undefined ? codPuntoVentaMh : emisor.cod_punto_venta_mh,
+        logo_url: logoUrl !== undefined ? logoUrl : emisor.logo_url
       }
     });
 
@@ -181,6 +184,7 @@ router.put('/auth/config', authMiddleware, async (req: any, res: any) => {
         nrc: updated.nrc,
         razonSocial: updated.razon_social,
         nombreComercial: updated.nombre_comercial,
+        logoUrl: updated.logo_url,
         dtesVisibles: updated.dtes_visibles || ["01", "03", "11"],
         ambiente: updated.ambiente || "00"
       }
@@ -498,7 +502,8 @@ router.get('/public/dtes/:codigoGeneracion/pdf', async (req: any, res: any) => {
     const dte = await prisma.dteEmitido.findFirst({
       where: isNum
         ? { id: parseInt(codigoGeneracion, 10) }
-        : { codigo_generacion: codigoGeneracion.toUpperCase() }
+        : { codigo_generacion: codigoGeneracion.toUpperCase() },
+      include: { emisor: true }
     });
 
     if (!dte) {
@@ -514,6 +519,10 @@ router.get('/public/dtes/:codigoGeneracion/pdf', async (req: any, res: any) => {
       jsonEnviado.firmaElectronica || null,
       selloRecibido
     );
+    if (dte.emisor?.logo_url) {
+      dteCompleto.emisor = dteCompleto.emisor || {};
+      dteCompleto.emisor.logoUrl = dte.emisor.logo_url;
+    }
 
     const pdfBuffer = await generarPdfDte(dteCompleto);
 
@@ -575,7 +584,8 @@ router.get('/dtes/:codigoGeneracion/pdf', authMiddleware, async (req: any, res: 
     const dte = await prisma.dteEmitido.findFirst({
       where: isNum
         ? { id: parseInt(codigoGeneracion, 10), emisor_id: req.emisor.id }
-        : { codigo_generacion: codigoGeneracion.toUpperCase(), emisor_id: req.emisor.id }
+        : { codigo_generacion: codigoGeneracion.toUpperCase(), emisor_id: req.emisor.id },
+      include: { emisor: true }
     });
 
     if (!dte) {
@@ -591,6 +601,10 @@ router.get('/dtes/:codigoGeneracion/pdf', authMiddleware, async (req: any, res: 
       jsonEnviado.firmaElectronica || null,
       selloRecibido
     );
+    if (dte.emisor?.logo_url || req.emisor?.logo_url) {
+      dteCompleto.emisor = dteCompleto.emisor || {};
+      dteCompleto.emisor.logoUrl = dte.emisor?.logo_url || req.emisor?.logo_url;
+    }
 
     const pdfBuffer = await generarPdfDte(dteCompleto);
 
