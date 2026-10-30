@@ -7,6 +7,9 @@ import { config } from '../config';
 import { verifyToken, generateToken } from '../utils/jwt';
 import { generarJsonDteCompleto } from '../services/dte-json.service';
 import { generarPdfDte } from '../services/pdf.service';
+import { DteInvalidoError } from '../services/schema.service';
+import fs from 'fs';
+import path from 'path';
 import { enviarCorreoDte } from '../services/email.service';
 import { enviarWhatsappDteApi } from '../services/whatsapp.service';
 
@@ -214,9 +217,9 @@ const enviarDTEController = async (req: any, res: any) => {
   try {
     const emisorDb = req.emisor; // Recuperado por authMiddleware
     let tipoDte = '01';
-    let versionDte = 1;
+    let versionDte = 2;
 
-    if (req.path === '/ccf') { tipoDte = '03'; versionDte = 3; }
+    if (req.path === '/ccf') { tipoDte = '03'; versionDte = 4; }
     else if (req.path === '/nota-credito') { tipoDte = '05'; versionDte = 3; }
     else if (req.path === '/nota-debito') { tipoDte = '06'; versionDte = 3; }
     else if (req.path === '/nota-remision') { tipoDte = '04'; versionDte = 3; }
@@ -481,10 +484,22 @@ const enviarDTEController = async (req: any, res: any) => {
     });
 
   } catch (error: any) {
+    if (error instanceof DteInvalidoError) {
+      return res.status(422).json({ success: false, error: error.message, detalles: error.detalles });
+    }
     console.error('Controller Error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+// Catálogos oficiales de MH (CAT-012, CAT-013 y CAT-008)
+let territorio: any = null;
+router.get('/catalogos/territorio', (_req: any, res: any) => {
+  if (!territorio) {
+    territorio = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'catalogos', 'territorio.json'), 'utf8'));
+  }
+  res.json({ success: true, departamentos: territorio });
+});
 
 // =========================================================================
 // RUTAS DTE PROTEGIDAS

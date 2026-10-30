@@ -70,6 +70,8 @@ function drawWatermark(doc: typeof PDFDocument) {
  */
 export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
   const identificacion = dteCompleto.identificacion || {};
+  // Solo un documento sellado en producción circula sin la marca de consulta.
+  const documentoValido = identificacion.ambiente === '01' && !!dteCompleto.selloRecibido;
   const emisor = dteCompleto.emisor || {};
   const receptor = dteCompleto.receptor || {};
   const resumen = dteCompleto.resumen || {};
@@ -94,7 +96,7 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
     doc.on('error', (err) => reject(err));
 
     // 1. Marca de agua
-    drawWatermark(doc);
+    if (!documentoValido) drawWatermark(doc);
 
     // 2. Encabezado principal
     let y = 18;
@@ -342,7 +344,7 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
       { label: 'Monto global Desc., Rebajas y otros a ventas Exentas:', val: fmtNum(resumen.descuExenta) },
       { label: 'Monto global Desc., Rebajas y otros a ventas gravadas:', val: fmtNum(resumen.descuGravada) },
       { label: 'Sub-Total:', val: fmtNum(resumen.subTotal) },
-      { label: 'IVA Retenido / Impuestos:', val: fmtNum(resumen.ivaRete1 || resumen.totalIva || 0) },
+      { label: 'IVA Retenido / Impuestos:', val: fmtNum(resumen.ivaRete || resumen.ivaRete1 || resumen.totalIva || 0) },
       { label: 'Monto Total de la Operación:', val: fmtNum(resumen.montoTotalOperacion) },
       { label: 'Total Otros Montos No Afectos:', val: fmtNum(resumen.totalNoGravado) },
       { label: 'Total a Pagar:', val: fmtNum(resumen.totalPagar || resumen.montoTotalOperacion) }
