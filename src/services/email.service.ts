@@ -183,26 +183,31 @@ function getTransporter() {
  * Envia por correo electrónico la representación gráfica en PDF y el archivo JSON oficial del DTE.
  */
 export async function enviarCorreoDte(params: enviarCorreoDteParams): Promise<boolean> {
+  return (await enviarCorreoConMotivo(params)).enviado;
+}
+
+// Igual que enviarCorreoDte, pero indica por qué falló. Solo el mensaje de Google, nunca credenciales.
+export async function enviarCorreoConMotivo(params: enviarCorreoDteParams): Promise<{ enviado: boolean; motivo?: string }> {
   try {
     const { destinoCorreo, codigoGeneracion } = params;
 
     if (!destinoCorreo || !destinoCorreo.includes('@')) {
       console.warn(`⚠️ Correo destino inválido: "${destinoCorreo}". No se enviará notificación por email.`);
-      return false;
+      return { enviado: false, motivo: "Correo destino inválido" };
     }
 
     const { clientId, clientSecret, refreshToken, emailFrom } = config.email;
 
     // Si existen las credenciales OAuth2 de Google, usar la REST API HTTP (Puerto 443 - Imposible de bloquear)
     if (clientId && clientSecret && refreshToken) {
-      return await enviarCorreoGmailApiHttp(params, emailFrom, clientId, clientSecret, refreshToken);
+      return { enviado: await enviarCorreoGmailApiHttp(params, emailFrom, clientId, clientSecret, refreshToken) };
     }
 
     // Fallback a SMTP si no hay OAuth2
     const mailTransporter = getTransporter();
     if (!mailTransporter) {
       console.warn(`⚠️ No se pudo enviar correo para DTE ${codigoGeneracion}: Credenciales de correo no configuradas.`);
-      return false;
+      return { enviado: false, motivo: "Credenciales de correo no configuradas" };
     }
 
     const jsonString = JSON.stringify(params.jsonCompleto, null, 2);
@@ -221,10 +226,12 @@ export async function enviarCorreoDte(params: enviarCorreoDteParams): Promise<bo
     });
 
     console.log(`📧 Correo enviado con éxito vía SMTP a "${destinoCorreo}" para DTE: ${codigoGeneracion}. MessageId: ${info.messageId}`);
-    return true;
+    return { enviado: true };
   } catch (error: any) {
     console.error(`❌ Error al enviar correo de DTE ${params.codigoGeneracion}:`, error.response?.data || error.message || error);
     transporter = null;
-    return false;
+    const datos = error.response?.data;
+    const motivo = datos?.error?.message || datos?.error_description || datos?.error || error.message || "Error desconocido";
+    return { enviado: false, motivo: String(motivo) };
   }
 }

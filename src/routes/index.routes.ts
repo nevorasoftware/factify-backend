@@ -10,7 +10,7 @@ import { generarPdfDte } from '../services/pdf.service';
 import { DteInvalidoError } from '../services/schema.service';
 import fs from 'fs';
 import path from 'path';
-import { enviarCorreoDte } from '../services/email.service';
+import { enviarCorreoDte, enviarCorreoConMotivo } from '../services/email.service';
 import { enviarWhatsappDteApi } from '../services/whatsapp.service';
 
 const router = Router();
@@ -761,7 +761,7 @@ router.post('/dtes/:codigoGeneracion/reenviar-correo', authMiddleware, async (re
     const nombreEmisor = dteCompleto.emisor?.nombre || req.emisor.razon_social || 'Emisor';
     const montoTotal = Number(dteCompleto.resumen?.totalPagar || dteCompleto.resumen?.montoTotalOperacion || 0).toFixed(2);
 
-    const enviado = await enviarCorreoDte({
+    const { enviado, motivo } = await enviarCorreoConMotivo({
       destinoCorreo: finalCorreo,
       nombreReceptor,
       nombreEmisor,
@@ -782,7 +782,7 @@ router.post('/dtes/:codigoGeneracion/reenviar-correo', authMiddleware, async (re
     } else {
       return res.status(500).json({
         success: false,
-        error: `No se pudo enviar el correo a "${finalCorreo}". Verifica las credenciales SMTP.`
+        error: `No se pudo enviar el correo a "${finalCorreo}". ${motivo || ''}`
       });
     }
   } catch (error: any) {
