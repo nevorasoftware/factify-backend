@@ -210,6 +210,16 @@ const construirDteBase = async (req: any, tipoDte: string, versionDte: number, e
   return construirDte(req, tipoDte, versionDte, emisorDb);
 };
 
+// Cada tipo nombra distinto su monto: retención, liquidaciones y donación no tienen total a pagar.
+const montosDelDte = (dte: any) => {
+  const r = dte.resumen || {};
+  const monto = r.totalIvaRetenido ?? r.total ?? r.valorTotal ?? dte.cuerpoDocumento?.liquidoApagar ?? 0;
+  return {
+    montoOperacion: r.montoTotalOperacion ?? r.totalCompra ?? monto,
+    totalPagar: r.totalPagar ?? r.montoTotalOperacion ?? monto
+  };
+};
+
 // =========================================================================
 // CONTROLADOR CENTRAL DE ENVÍO DE DTE
 // =========================================================================
@@ -220,15 +230,15 @@ const enviarDTEController = async (req: any, res: any) => {
     let versionDte = 2;
 
     if (req.path === '/ccf') { tipoDte = '03'; versionDte = 4; }
-    else if (req.path === '/nota-credito') { tipoDte = '05'; versionDte = 3; }
-    else if (req.path === '/nota-debito') { tipoDte = '06'; versionDte = 3; }
-    else if (req.path === '/nota-remision') { tipoDte = '04'; versionDte = 3; }
-    else if (req.path === '/comprobante-retencion') { tipoDte = '07'; versionDte = 1; }
-    else if (req.path === '/comprobante-liquidacion') { tipoDte = '08'; versionDte = 1; }
-    else if (req.path === '/documento-contable-liquidacion') { tipoDte = '09'; versionDte = 1; }
-    else if (req.path === '/factura-exportacion') { tipoDte = '11'; versionDte = 1; }
-    else if (req.path === '/factura-sujeto-excluido') { tipoDte = '14'; versionDte = 1; }
-    else if (req.path === '/comprobante-donacion') { tipoDte = '15'; versionDte = 1; }
+    else if (req.path === '/nota-credito') { tipoDte = '05'; versionDte = 4; }
+    else if (req.path === '/nota-debito') { tipoDte = '06'; versionDte = 4; }
+    else if (req.path === '/nota-remision') { tipoDte = '04'; versionDte = 4; }
+    else if (req.path === '/comprobante-retencion') { tipoDte = '07'; versionDte = 2; }
+    else if (req.path === '/comprobante-liquidacion') { tipoDte = '08'; versionDte = 2; }
+    else if (req.path === '/documento-contable-liquidacion') { tipoDte = '09'; versionDte = 2; }
+    else if (req.path === '/factura-exportacion') { tipoDte = '11'; versionDte = 3; }
+    else if (req.path === '/factura-sujeto-excluido') { tipoDte = '14'; versionDte = 2; }
+    else if (req.path === '/comprobante-donacion') { tipoDte = '15'; versionDte = 2; }
 
     // Reconstruir y sanear el documento utilizando estrictamente los datos de perfil del emisorDb
     const documentoBase = await construirDteBase(req, tipoDte, versionDte, emisorDb);
@@ -298,8 +308,7 @@ const enviarDTEController = async (req: any, res: any) => {
     }
 
     // Registrar el DTE antes de transmitir: si algo falla después, el documento no se pierde.
-    const montoOperacion = documentoBase.resumen ? (documentoBase.resumen.montoTotalOperacion || documentoBase.resumen.valorTotal || 0) : 0;
-    const totalPagar = documentoBase.resumen ? (documentoBase.resumen.totalPagar || documentoBase.resumen.valorTotal || 0) : 0;
+    const { montoOperacion, totalPagar } = montosDelDte(documentoBase);
     const dteRegistrado = await prisma.dteEmitido.create({
       data: {
         emisor_id: emisorDb.id,
@@ -370,16 +379,17 @@ const enviarDTEController = async (req: any, res: any) => {
     // Guardar el resultado (reintenta: un sello de MH no puede perderse por un fallo momentáneo de BD)
     const estadoFinal = resultadoMH.estado || 'RECHAZADO';
     const esProcesado = estadoFinal === 'PROCESADO';
+    // Retención y liquidación detallan documentos, no productos: no traen cantidad ni precio.
     const itemsData = (Array.isArray(documentoBase.cuerpoDocumento) ? documentoBase.cuerpoDocumento : []).map((item: any) => ({
       dte_id: dteRegistrado.id,
       num_item: item.numItem,
-      cantidad: item.cantidad,
-      descripcion: item.descripcion,
-      precio_unitario: item.precioUni !== undefined ? item.precioUni : (item.valorUni !== undefined ? item.valorUni : (item.valorDonacion || 0)),
-      venta_gravada: item.ventaGravada || 0,
+      cantidad: item.cantidad ?? 1,
+      descripcion: String(item.descripcion || item.observaciones || item.numeroDocumento || '').slice(0, 255),
+      precio_unitario: item.precioUni ?? item.valorUni ?? item.montoSujetoGrav ?? 0,
+      venta_gravada: item.ventaGravada ?? item.compra ?? item.montoSujetoGrav ?? 0,
       venta_exenta: item.ventaExenta || 0,
       venta_nosujeta: item.ventaNoSuj || 0,
-      iva_item: item.ivaItem || 0,
+      iva_item: item.ivaItem ?? item.totalIva ?? item.ivaRetenido ?? 0,
       tributos: item.tributos || null
     }));
 
@@ -465,7 +475,7 @@ const enviarDTEController = async (req: any, res: any) => {
         const destinoCorreo = documentoBase.receptor?.correo || emisorDb.correo;
         const nombreReceptor = documentoBase.receptor?.nombre || 'Cliente';
         const nombreEmisor = documentoBase.emisor?.nombre || emisorDb.razon_social || 'Emisor';
-        const montoTotal = Number(documentoBase.resumen?.totalPagar || documentoBase.resumen?.montoTotalOperacion || 0).toFixed(2);
+        const montoTotal = Number(montosDelDte(documentoBase).totalPagar).toFixed(2);
 
         await enviarCorreoDte({
           destinoCorreo,

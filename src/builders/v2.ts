@@ -44,6 +44,36 @@ export function emisorV2(emisorDb: any) {
   };
 }
 
+// Nota de crédito y de débito: el emisor no lleva establecimiento ni punto de venta.
+export function emisorSinEstablecimiento(emisorDb: any) {
+  const { codEstable, codPuntoVenta, ...emisor } = emisorV2(emisorDb);
+  return emisor;
+}
+
+export function tipoDocumentoReceptor(numDocumento: string): string {
+  if (/^[0-9]{8}-[0-9]$/.test(numDocumento)) return '13';
+  if (/^([0-9]{14}|[0-9]{9})$/.test(numDocumento.replace(/-/g, ''))) return '36';
+  return '37';
+}
+
+export function receptorConDocumento(receptor: any, opciones: { direccionRequerida?: boolean } = {}) {
+  const documento = textoONull(receptor?.numDocumento ?? receptor?.nit);
+  const tipoDocumento = textoONull(receptor?.tipoDocumento) || (documento ? tipoDocumentoReceptor(documento) : null);
+  const dir = receptor?.direccion;
+  return {
+    tipoDocumento,
+    numDocumento: documento && tipoDocumento === '36' ? documento.replace(/-/g, '') : documento,
+    nrc: textoONull(receptor?.nrc)?.replace(/-/g, '') ?? null,
+    nombre: textoONull(receptor?.nombre),
+    codActividad: textoONull(receptor?.codActividad),
+    descActividad: textoONull(receptor?.descActividad),
+    nombreComercial: textoONull(receptor?.nombreComercial),
+    direccion: opciones.direccionRequerida || dir?.distrito ? direccionObligatoria(dir, 'del receptor') : null,
+    telefono: textoONull(receptor?.telefono),
+    correo: textoONull(receptor?.correo)
+  };
+}
+
 export function identificacionV2(req: any, tipoDte: string, version: number, emisorDb: any) {
   const ahora = new Date();
   const codigo = req.body.identificacion?.codigoGeneracion;
@@ -61,6 +91,12 @@ export function identificacionV2(req: any, tipoDte: string, version: number, emi
     horEmi: ahora.toLocaleTimeString('en-GB', { timeZone: 'America/El_Salvador', hour12: false }),
     tipoMoneda: 'USD'
   };
+}
+
+// Liquidaciones y donación: su esquema no admite contingencia.
+export function identificacionSinContingencia(req: any, tipoDte: string, version: number, emisorDb: any) {
+  const { tipoContingencia, motivoContin, ...identificacion } = identificacionV2(req, tipoDte, version, emisorDb);
+  return identificacion;
 }
 
 export function documentosRelacionadosV2(documentos: any, fecEmi: string) {
@@ -143,7 +179,7 @@ export function pagosV2(resumen: any, total: number) {
 export async function validarYNumerar(documento: any, tipoDte: string, emisorDb: any) {
   validarContraSchema(documento, tipoDte);
   documento.identificacion.numeroControl = await obtenerSiguienteCorrelativo(
-    tipoDte, emisorDb.id, documento.emisor.codEstable, documento.emisor.codPuntoVenta, 1
+    tipoDte, emisorDb.id, formatearCodEstableMH(emisorDb.cod_establecimiento_mh), formatearCodPuntoVentaMH(emisorDb.cod_punto_venta_mh), 1
   );
   return documento;
 }

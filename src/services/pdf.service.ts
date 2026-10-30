@@ -65,6 +65,120 @@ function drawWatermark(doc: typeof PDFDocument) {
   doc.restore();
 }
 
+type Alineacion = 'left' | 'center' | 'right';
+
+// Columnas y totales de cada tipo de DTE; todos suman 574 de ancho.
+function disenoPorTipo(dte: any) {
+  const r = dte.resumen || {};
+  const cuerpo = Array.isArray(dte.cuerpoDocumento) ? dte.cuerpoDocumento : [];
+
+  const tablaDocumentos = (headers: string[], valores: (i: any) => string[]) => ({
+    headers: ['N°', 'Tipo', 'Gen.', 'Documento', 'Fecha', ...headers],
+    colWidths: [20, 28, 28, 200, 50, ...headers.map(() => 248 / headers.length)],
+    colAligns: ['center', 'center', 'center', 'left', 'center', ...headers.map(() => 'right')] as Alineacion[],
+    filas: cuerpo.map((i: any, idx: number) => [
+      String(i.numItem || idx + 1), String(i.tipoDte || ''), String(i.tipoGeneracion || ''),
+      String(i.numeroDocumento || ''), String(i.fechaEmision || ''), ...valores(i)
+    ])
+  });
+
+  const tablaItems = (ultimas: [string, string], valores: (i: any) => [any, any]) => ({
+    headers: ['N°', 'Cantidad', 'Unidad', 'Descripción', 'Precio Unitario', ...ultimas],
+    colWidths: [20, 40, 50, 264, 70, 60, 70],
+    colAligns: ['center', 'center', 'center', 'left', 'right', 'right', 'right'] as Alineacion[],
+    filas: cuerpo.map((i: any, idx: number) => [
+      String(i.numItem || idx + 1), fmtNum(i.cantidad), UNIDADES_MEDIDA[i.uniMedida] || 'Unidad', String(i.descripcion || ''),
+      fmtNum(i.precioUni ?? i.valorUni), ...valores(i).map(fmtNum)
+    ])
+  });
+
+  switch (dte.identificacion?.tipoDte) {
+    case '07':
+      return {
+        ...tablaDocumentos(['Monto sujeto', 'Código', 'IVA retenido'], i => [fmtNum(i.montoSujetoGrav), String(i.codigoRetencionMH || ''), fmtNum(i.ivaRetenido)]),
+        totalesFilas: [
+          { label: 'Total sujeto a retención:', val: fmtNum(r.totalSujetoRetencion) },
+          { label: 'Total IVA:', val: fmtNum(r.totalIva) },
+          { label: 'Total IVA retenido:', val: fmtNum(r.totalIvaRetenido) }
+        ]
+      };
+    case '08':
+      return {
+        ...tablaDocumentos(['No sujetas', 'Exentas', 'Gravadas', 'Exportación', 'IVA'], i => [fmtNum(i.ventaNoSuj), fmtNum(i.ventaExenta), fmtNum(i.ventaGravada), fmtNum(i.exportaciones), fmtNum(i.ivaItem)]),
+        totalesFilas: [
+          { label: 'Suma de ventas:', val: fmtNum(r.subTotalVentas) },
+          { label: 'Monto total de la operación:', val: fmtNum(r.montoTotalOperacion) },
+          { label: 'IVA percibido:', val: fmtNum(r.ivaPerci) },
+          { label: 'Total:', val: fmtNum(r.total) }
+        ]
+      };
+    case '09': {
+      const c = dte.cuerpoDocumento || {};
+      return {
+        headers: ['Periodo liquidado', 'Valor de las operaciones', 'Sin percepción', 'Comisión'],
+        colWidths: [200, 148, 113, 113],
+        colAligns: ['center', 'right', 'right', 'right'] as Alineacion[],
+        filas: [[`${c.periodoLiquidacionFechaInicio || ''} a ${c.periodoLiquidacionFechaFin || ''}`, fmtNum(c.valorOperaciones), fmtNum(c.montoSinPercepcion), fmtNum(c.comision)]],
+        totalesFilas: [
+          { label: 'Subtotal:', val: fmtNum(c.subTotal) },
+          { label: 'IVA de las operaciones:', val: fmtNum(c.iva) },
+          { label: 'IVA percibido (2%):', val: fmtNum(c.ivaPercibido) },
+          { label: 'IVA de la comisión:', val: fmtNum(c.ivaComision) },
+          { label: 'Líquido a pagar:', val: fmtNum(c.liquidoApagar) }
+        ]
+      };
+    }
+    case '11':
+      return {
+        ...tablaItems(['Descuento', 'Venta'], i => [i.montoDescu, i.ventaGravada]),
+        totalesFilas: [
+          { label: 'Total ventas:', val: fmtNum(r.totalGravada) },
+          { label: 'Seguro:', val: fmtNum(r.seguro) },
+          { label: 'Flete:', val: fmtNum(r.flete) },
+          { label: 'Monto total de la operación:', val: fmtNum(r.montoTotalOperacion) },
+          { label: 'Total a pagar:', val: fmtNum(r.totalPagar) }
+        ]
+      };
+    case '14':
+      return {
+        ...tablaItems(['Descuento', 'Compra'], i => [i.montoDescu, i.compra]),
+        totalesFilas: [
+          { label: 'Total de compras:', val: fmtNum(r.totalCompra) },
+          { label: 'Retención de renta:', val: fmtNum(r.reteRenta) },
+          { label: 'Total a pagar:', val: fmtNum(r.totalPagar) }
+        ]
+      };
+    case '15':
+      return {
+        ...tablaItems(['Depreciación', 'Valor'], i => [i.tipoDepreciacion, i.valor]),
+        totalesFilas: [{ label: 'Valor total de la donación:', val: fmtNum(r.valorTotal) }]
+      };
+    default: {
+      const iva = (r.tributos || []).reduce((a: number, t: any) => a + Number(t.valor || 0), 0) || r.totalIva || 0;
+      return {
+        headers: ['N°', 'Cantidad', 'Unidad', 'Descripción', 'Precio Unitario', 'Otros montos no afectos', 'Descuento por ítem', 'Ventas No Sujetas', 'Ventas Exentas', 'Ventas Gravadas'],
+        colWidths: [20, 36, 40, 140, 48, 48, 48, 48, 48, 48],
+        colAligns: ['center', 'center', 'center', 'left', 'right', 'right', 'right', 'right', 'right', 'right'] as Alineacion[],
+        filas: cuerpo.map((i: any, idx: number) => [
+          String(i.numItem || idx + 1), fmtNum(i.cantidad), UNIDADES_MEDIDA[i.uniMedida] || 'Unidad', String(i.descripcion || ''), fmtNum(i.precioUni),
+          fmtNum(i.noGravado), fmtNum(i.montoDescu), fmtNum(i.ventaNoSuj), fmtNum(i.ventaExenta), fmtNum(i.ventaGravada)
+        ]),
+        totalesFilas: [
+          { label: 'Suma de Ventas:', vals: [fmtNum(r.totalNoSuj), fmtNum(r.totalExenta), fmtNum(r.totalGravada)] },
+          { label: 'Sumatoria de ventas:', val: fmtNum(r.subTotalVentas) },
+          { label: 'Descuentos por ítem:', val: fmtNum(r.totalDescu) },
+          { label: 'IVA 13%:', val: fmtNum(iva) },
+          { label: 'IVA Percibido:', val: fmtNum(r.ivaPerci) },
+          { label: 'IVA Retenido:', val: fmtNum(r.ivaRete) },
+          { label: 'Monto Total de la Operación:', val: fmtNum(r.montoTotalOperacion) },
+          { label: 'Total Otros Montos No Afectos:', val: fmtNum(r.totalNoGravado) },
+          { label: 'Total a Pagar:', val: fmtNum(r.totalPagar ?? r.montoTotalOperacion) }
+        ]
+      };
+    }
+  }
+}
+
 /**
  * Genera un PDF de Representación Gráfica del DTE idéntico a la normativa del MH El Salvador.
  */
@@ -75,11 +189,10 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
   const emisor = dteCompleto.emisor || {};
   const receptor = dteCompleto.receptor || {};
   const resumen = dteCompleto.resumen || {};
-  const cuerpo = dteCompleto.cuerpoDocumento || [];
   const selloRecibido = dteCompleto.selloRecibido || dteCompleto.respuesta_mh?.selloRecibido || dteCompleto.sello_recepcion_mh || 'N/A';
 
   // Generar QR Buffer
-  const qrUrl = `https://consulta.dtes.mh.gob.sv/consultaPublica?ambiente=${identificacion.ambiente || '00'}&codGen=${identificacion.codigoGeneracion || ''}&fechaEmi=${identificacion.fecEmi || ''}`;
+  const qrUrl = `https://admin.factura.gob.sv/consultaPublica?ambiente=${identificacion.ambiente || '00'}&codGen=${identificacion.codigoGeneracion || ''}&fechaEmi=${identificacion.fecEmi || ''}`;
   let qrBuffer: Buffer;
   try {
     qrBuffer = await QRCode.toBuffer(qrUrl, { margin: 1, width: 80 });
@@ -180,7 +293,7 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
     ey += lineStep + 2;
 
     doc.font('Helvetica-Bold').text('NIT: ', 24, ey, { continued: true });
-    doc.font('Helvetica').text(emisor.nit || '');
+    doc.font('Helvetica').text(emisor.nit || emisor.numDocumento || '');
     ey += lineStep;
 
     doc.font('Helvetica-Bold').text('NRC: ', 24, ey, { continued: true });
@@ -205,8 +318,8 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
     doc.font('Helvetica').text(emisor.correo || '');
     ey += lineStep;
 
-    doc.font('Helvetica-Bold').text('Tipo de establecimiento: ', 24, ey, { continued: true });
-    doc.font('Helvetica').text(emisor.tipoEstablecimiento === '01' ? 'Sucursal / Agencia' : 'Casa Matriz');
+    doc.font('Helvetica-Bold').text('Establecimiento: ', 24, ey, { continued: true });
+    doc.font('Helvetica').text(emisor.codEstable || '-');
 
     // --- Box RECEPTOR ---
     const rx = 310;
@@ -271,15 +384,7 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
 
     // 8. Tabla Cuerpo de Documento (Items) (Y=304)
     y = 304;
-    const colWidths = [20, 36, 40, 140, 48, 48, 48, 48, 48, 48]; // Total = 574
-    const colAligns: ('left' | 'center' | 'right')[] = [
-      'center', 'center', 'center', 'left', 'right', 'right', 'right', 'right', 'right', 'right'
-    ];
-    const headers = [
-      'N°', 'Cantidad', 'Unidad', 'Descripción', 'Precio Unitario',
-      'Otros montos no afectos', 'Descuento por ítem', 'Ventas No Sujetas',
-      'Ventas Exentas', 'Ventas Gravadas'
-    ];
+    const { headers, colWidths, colAligns, filas, totalesFilas } = disenoPorTipo(dteCompleto);
 
     const itemTableWidth = 572;
     const headerHeight = 18;
@@ -300,21 +405,9 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
 
     // Filas de Items
     const rowHeight = 14;
-    cuerpo.forEach((item: any, idx: number) => {
+    filas.forEach((vals: string[]) => {
       doc.rect(20, y, itemTableWidth, rowHeight).stroke('#000000');
       let ix = 20;
-      const vals = [
-        String(item.numItem || idx + 1),
-        fmtNum(item.cantidad),
-        UNIDADES_MEDIDA[item.uniMedida] || 'Unidad',
-        String(item.descripcion || ''),
-        fmtNum(item.precioUni || item.precioUnitario),
-        fmtNum(item.noGravado || item.otrosMontos),
-        fmtNum(item.montoDescu),
-        fmtNum(item.ventaNoSuj),
-        fmtNum(item.ventaExenta),
-        fmtNum(item.ventaGravada)
-      ];
 
       doc.fontSize(6).font('Helvetica');
       vals.forEach((v, i) => {
@@ -328,7 +421,7 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
     });
 
     // Si no hay items, dibujar 1 fila vacia
-    if (cuerpo.length === 0) {
+    if (filas.length === 0) {
       doc.rect(20, y, itemTableWidth, rowHeight).stroke('#000000');
       y += rowHeight;
     }
@@ -337,18 +430,7 @@ export async function generarPdfDte(dteCompleto: any): Promise<Buffer> {
     const summaryWidth = 310;
     const summaryX = 592 - summaryWidth;
 
-    const totalsRows = [
-      { label: 'Suma de Ventas:', vals: [fmtNum(resumen.totalNoSuj), fmtNum(resumen.totalExenta), fmtNum(resumen.totalGravada)] },
-      { label: 'Sumatoria de ventas:', val: fmtNum(resumen.subTotalVentas) },
-      { label: 'Monto global Desc., Rebajas y otros a ventas no sujetas:', val: fmtNum(resumen.descuNoSuj) },
-      { label: 'Monto global Desc., Rebajas y otros a ventas Exentas:', val: fmtNum(resumen.descuExenta) },
-      { label: 'Monto global Desc., Rebajas y otros a ventas gravadas:', val: fmtNum(resumen.descuGravada) },
-      { label: 'Sub-Total:', val: fmtNum(resumen.subTotal) },
-      { label: 'IVA Retenido / Impuestos:', val: fmtNum(resumen.ivaRete || resumen.ivaRete1 || resumen.totalIva || 0) },
-      { label: 'Monto Total de la Operación:', val: fmtNum(resumen.montoTotalOperacion) },
-      { label: 'Total Otros Montos No Afectos:', val: fmtNum(resumen.totalNoGravado) },
-      { label: 'Total a Pagar:', val: fmtNum(resumen.totalPagar || resumen.montoTotalOperacion) }
-    ];
+    const totalsRows: { label: string; val?: string; vals?: string[] }[] = totalesFilas;
 
     const summaryRowHeight = 11;
     doc.fontSize(6);

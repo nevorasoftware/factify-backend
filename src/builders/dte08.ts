@@ -1,125 +1,73 @@
-import { v4 as uuidv4 } from 'uuid';
-import { round2, obtenerEmisorBase, sanearNumeroControl, obtenerSiguienteCorrelativo, obtenerIdentificacionBase } from './common';
+import { montoEnLetras } from '../utils/letras';
+import { DteInvalidoError } from '../services/schema.service';
+import { IVA, round2, emisorV2, identificacionSinContingencia, receptorConDocumento, redondear, textoONull, validarYNumerar } from './v2';
 
+function lineaLiquidacion(item: any, idx: number) {
+  const numero = (v: any) => redondear(Number(v) || 0, 8);
+  const ventaGravada = numero(item.ventaGravada);
+  const numeroDocumento = String(item.numeroDocumento || '').toUpperCase().trim();
+  if (!numeroDocumento || !item.fechaEmision) {
+    throw new DteInvalidoError(`El ítem ${idx + 1} debe indicar el documento liquidado y su fecha.`);
+  }
+  return {
+    numItem: idx + 1,
+    tipoDte: String(item.tipoDte || ''),
+    tipoGeneracion: Number(item.tipoGeneracion),
+    numeroDocumento,
+    fechaEmision: item.fechaEmision,
+    ventaNoSuj: numero(item.ventaNoSuj),
+    ventaExenta: numero(item.ventaExenta),
+    ventaGravada,
+    exportaciones: numero(item.exportaciones),
+    tributos: ventaGravada !== 0 ? ['20'] : null,
+    ivaItem: round2(ventaGravada * IVA),
+    observaciones: textoONull(item.observaciones)
+  };
+}
+
+// El comprobante lo emite el comisionista al mandante por las ventas hechas a su nombre.
 export async function construirDte08(req: any, versionDte: number, emisorDb: any) {
   const { receptor, cuerpoDocumento, resumen } = req.body;
-
-  const fechaActual = new Date();
-  const fecEmi = fechaActual.toLocaleDateString('en-CA', { timeZone: 'America/El_Salvador' });
-  const horEmi = fechaActual.toLocaleTimeString('en-GB', { timeZone: 'America/El_Salvador', hour12: false });
-
-  const emisorSanitized = obtenerEmisorBase(emisorDb);
-  const codEstable = String(emisorSanitized.codEstableMH || "0000").trim().padStart(4, '0');
-  const codPunto = String(emisorSanitized.codPuntoVentaMH || "0000").trim().padStart(4, '0');
-
-  // 1. Sanear Receptor
-  const receptorSanitized = {
-    nit: String(receptor?.nit || "00000000000000").toUpperCase().trim(),
-    nrc: receptor?.nrc || "000000",
-    nombre: receptor?.nombre || "Receptor Liquidacion",
-    codActividad: receptor?.codActividad || "46900",
-    descActividad: receptor?.descActividad || "Comercio al por mayor no especializado",
-    nombreComercial: receptor?.nombreComercial || receptor?.nombre || "Receptor Comercial",
-    direccion: receptor?.direccion ? {
-      departamento: receptor.direccion.departamento || "01",
-      municipio: receptor.direccion.municipio || "01",
-      complemento: (receptor.direccion.complemento && receptor.direccion.complemento.trim().length >= 10) 
-        ? receptor.direccion.complemento.trim() 
-        : "San Salvador, El Salvador"
-    } : { departamento: "01", municipio: "01", complemento: "San Salvador, El Salvador" },
-    telefono: receptor?.telefono || "22222222",
-    correo: receptor?.correo || "correo@ejemplo.com"
-  };
-
-  // 2. Sanear Cuerpo Documento
-  const cuerpoSanitized = cuerpoDocumento.map((item: any, idx: number) => {
-    const docType = item.tipoDte || item.tipoDocumento || "03";
-    const isExport = docType === '11';
-    const grossAmt = round2(item.montoTotal || item.exportaciones || 0);
-
-    const exportaciones = isExport ? grossAmt : 0;
-    const ventaGravada = !isExport ? grossAmt : 0;
-    const ivaItem = round2(item.ivaItem || 0);
-
-    return {
-      numItem: idx + 1,
-      tipoDte: docType, 
-      tipoGeneracion: item.tipoGeneracion ? Number(item.tipoGeneracion) : 1, 
-      numeroDocumento: String(item.numeroDocumento || item.codigoGeneracion || "00000000-0000-0000-0000-000000000000").toUpperCase().trim(),
-      fechaGeneracion: item.fechaGeneracion || item.fechaDocumento || fecEmi,
-      exportaciones: exportaciones,
-      ivaItem: ivaItem,
-      obsItem: item.obsItem || "Liquidacion de operacion",
-      ventaNoSuj: 0,
-      ventaExenta: 0,
-      ventaGravada: ventaGravada,
-      tributos: []
-    };
-  });
-
-  // 3. Sanear Resumen
-  const totalExportacion = round2(cuerpoSanitized.reduce((acc: number, curr: any) => acc + (curr.exportaciones || 0), 0));
-  const ivaPerci = round2(cuerpoSanitized.reduce((acc: number, curr: any) => acc + (curr.ivaItem || 0), 0));
-  const totalNoSuj = round2(cuerpoSanitized.reduce((acc: number, curr: any) => acc + (curr.ventaNoSuj || 0), 0));
-  const totalExenta = round2(cuerpoSanitized.reduce((acc: number, curr: any) => acc + (curr.ventaExenta || 0), 0));
-  const totalGravada = round2(cuerpoSanitized.reduce((acc: number, curr: any) => acc + (curr.ventaGravada || 0), 0));
-  const subTotalVentas = round2(totalNoSuj + totalExenta + totalGravada);
-  const totalVal = round2(totalExportacion + subTotalVentas + ivaPerci);
-
-  const resumenSanitized = {
-    totalExportacion,
-    ivaPerci,
-    total: totalVal,
-    totalNoSuj,
-    totalExenta,
-    totalGravada,
-    subTotalVentas,
-    tributos: [],
-    montoTotalOperacion: totalVal,
-    totalLetras: resumen?.totalLetras || "CERO DOLARES",
-    condicionOperacion: resumen?.condicionOperacion || 1
-  };
-
-  // 4. Secuencial de Control
-  let { numControl, needsGeneration, codEstableUsed, codPuntoUsed } = sanearNumeroControl(
-    req.body.identificacion?.numeroControl,
-    '08',
-    codEstable,
-    codPunto,
-    emisorDb.id
-  );
-
-  if (needsGeneration) {
-    numControl = await obtenerSiguienteCorrelativo('08', emisorDb.id, codEstable, codPunto, 1);
-    codEstableUsed = codEstable;
-    codPuntoUsed = codPunto;
+  if (!Array.isArray(cuerpoDocumento) || cuerpoDocumento.length === 0) {
+    throw new DteInvalidoError('El comprobante debe tener al menos un documento liquidado.');
   }
 
-  emisorSanitized.codEstableMH = codEstableUsed;
-  emisorSanitized.codEstable = codEstableUsed;
-  emisorSanitized.codPuntoVentaMH = codPuntoUsed;
-  emisorSanitized.codPuntoVenta = codPuntoUsed;
+  const lineas = cuerpoDocumento.map(lineaLiquidacion);
+  const suma = (campo: string) => round2(lineas.reduce((a: number, l: any) => a + l[campo], 0));
+  const totalNoSuj = suma('ventaNoSuj');
+  const totalExenta = suma('ventaExenta');
+  const totalGravada = suma('ventaGravada');
+  const exportacion = suma('exportaciones');
+  const iva = suma('ivaItem');
+  const subTotalVentas = round2(totalNoSuj + totalExenta + totalGravada + exportacion);
+  const montoTotalOperacion = round2(subTotalVentas + iva);
+  const ivaPerci = round2(Number(resumen?.ivaPerci) || 0);
+  const total = round2(montoTotalOperacion + ivaPerci);
 
-  const codGeneracion = req.body.identificacion?.codigoGeneracion
-    ? req.body.identificacion.codigoGeneracion.toUpperCase()
-    : uuidv4().toUpperCase();
-
-  const dteBase: any = {
-    identificacion: obtenerIdentificacionBase(
-      req.body.identificacion || {},
-      '08',
-      numControl,
-      codGeneracion,
-      fecEmi,
-      horEmi,
-      emisorDb
-    ),
-    emisor: emisorSanitized,
-    receptor: receptorSanitized,
-    cuerpoDocumento: cuerpoSanitized,
-    resumen: resumenSanitized,
+  const documento = {
+    identificacion: { ...identificacionSinContingencia(req, '08', versionDte, emisorDb), fusion: null },
+    emisor: emisorV2(emisorDb),
+    receptor: {
+      ...receptorConDocumento(receptor, { direccionRequerida: true }),
+      codDomiciliado: Number(receptor?.codDomiciliado) || 1
+    },
+    cuerpoDocumento: lineas,
+    resumen: {
+      totalNoSuj,
+      totalExenta,
+      totalGravada,
+      exportacion,
+      subTotalVentas,
+      tributos: iva !== 0 ? [{ codigo: '20', descripcion: 'Impuesto al Valor Agregado 13%', valor: iva }] : null,
+      montoTotalOperacion,
+      ivaPerci,
+      total,
+      totalLetras: montoEnLetras(total),
+      condicionOperacion: Number(resumen?.condicionOperacion) || 1,
+      observaciones: textoONull(resumen?.observaciones)
+    },
     apendice: null
   };
 
-  return dteBase;
+  return validarYNumerar(documento, '08', emisorDb);
 }

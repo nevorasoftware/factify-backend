@@ -1,106 +1,73 @@
-import { v4 as uuidv4 } from 'uuid';
-import { round2, obtenerEmisorBase, sanearNumeroControl, obtenerSiguienteCorrelativo, obtenerIdentificacionBase } from './common';
+import { montoEnLetras } from '../utils/letras';
+import { DteInvalidoError } from '../services/schema.service';
+import { IVA, round2, direccionObligatoria, emisorV2, identificacionSinContingencia, textoONull, validarYNumerar } from './v2';
 
+const PERCEPCION = 0.02; // Manual Funcional V2.0: IVA percibido del 2%
+
+// Lo emite el agente perceptor al afiliado. El cuerpo es un único objeto, no una lista de ítems.
 export async function construirDte09(req: any, versionDte: number, emisorDb: any) {
-  const { receptor, cuerpoDocumento, resumen } = req.body;
-
-  const fechaActual = new Date();
-  const fecEmi = fechaActual.toLocaleDateString('en-CA', { timeZone: 'America/El_Salvador' });
-  const horEmi = fechaActual.toLocaleTimeString('en-GB', { timeZone: 'America/El_Salvador', hour12: false });
-
-  const emisorSanitized = obtenerEmisorBase(emisorDb);
-  const codEstable = String(emisorSanitized.codEstableMH || "0000").trim().padStart(4, '0');
-  const codPunto = String(emisorSanitized.codPuntoVentaMH || "0000").trim().padStart(4, '0');
-
-  // 1. Sanear Receptor
-  const receptorSanitized = {
-    nit: String(receptor?.nit || "00000000000000").toUpperCase().trim(),
-    nrc: receptor?.nrc || "000000",
-    nombre: receptor?.nombre || "Receptor Liquidacion Contable",
-    nombreComercial: receptor?.nombreComercial || receptor?.nombre || "Receptor Comercial",
-    codActividad: receptor?.codActividad || "46900",
-    descActividad: receptor?.descActividad || "Comercio al por mayor no especializado",
-    tipoEstablecimiento: receptor?.tipoEstablecimiento || "01",
-    codigoMH: receptor?.codigoMH || "0000",
-    puntoVentaMH: receptor?.puntoVentaMH || "0000",
-    direccion: receptor?.direccion ? {
-      departamento: receptor.direccion.departamento || "01",
-      municipio: receptor.direccion.municipio || "01",
-      complemento: (receptor.direccion.complemento && receptor.direccion.complemento.trim().length >= 10) 
-        ? receptor.direccion.complemento.trim() 
-        : "San Salvador, El Salvador"
-    } : { departamento: "01", municipio: "01", complemento: "San Salvador, El Salvador" },
-    telefono: receptor?.telefono || "22222222",
-    correo: receptor?.correo || "correo@ejemplo.com"
-  };
-
-  // 2. Sanear Cuerpo Documento
-  const cuerpoSanitized = cuerpoDocumento.map((item: any, idx: number) => {
-    const montoSujetoGrav = round2(item.montoSujetoGrav || item.montoGravado || item.montoTotal || item.ventaGravada || 0);
-    const ivaPercibido = round2(item.ivaPercibido || item.montoPercepcionIVA || item.montoRetencion || (montoSujetoGrav ? montoSujetoGrav * 0.01 : 0));
-
-    return {
-      numItem: idx + 1,
-      tipoDte: item.tipoDte || item.tipoDocumento || "03", 
-      tipoDoc: item.tipoDoc ? Number(item.tipoDoc) : (item.tipoGeneracion ? Number(item.tipoGeneracion) : 1), 
-      numDocumento: String(item.codigoGeneracion || item.numDocumento || item.numeroDocumento || "00000000-0000-0000-0000-000000000000").toUpperCase().trim(),
-      fechaEmision: item.fechaEmision || item.fechaGeneracion || item.fechaDocumento || fecEmi,
-      montoSujetoGrav: montoSujetoGrav,
-      ivaPercibido: ivaPercibido, 
-      descripcion: item.descripcion || "Percepcion de IVA"
-    };
-  });
-
-  // 3. Sanear Resumen
-  const totalSujetoRetencion = round2(cuerpoSanitized.reduce((acc: number, curr: any) => acc + (curr.montoSujetoGrav || 0), 0));
-  const totalIVAretenido = round2(cuerpoSanitized.reduce((acc: number, curr: any) => acc + (curr.ivaPercibido || 0), 0));
-
-  const resumenSanitized = {
-    totalSujetoRetencion,
-    totalIVAretenido,
-    totalIVAretenidoLetras: resumen?.totalIVAretenidoLetras || "CERO DOLARES"
-  };
-
-  // 4. Secuencial de Control
-  let { numControl, needsGeneration, codEstableUsed, codPuntoUsed } = sanearNumeroControl(
-    req.body.identificacion?.numeroControl,
-    '09',
-    codEstable,
-    codPunto,
-    emisorDb.id
-  );
-
-  if (needsGeneration) {
-    numControl = await obtenerSiguienteCorrelativo('09', emisorDb.id, codEstable, codPunto, 1);
-    codEstableUsed = codEstable;
-    codPuntoUsed = codPunto;
+  const { receptor, extension } = req.body;
+  const c = req.body.cuerpoDocumento;
+  if (!c || Array.isArray(c) || typeof c !== 'object') {
+    throw new DteInvalidoError('El documento contable de liquidación requiere los datos del periodo liquidado.');
   }
 
-  emisorSanitized.codEstableMH = codEstableUsed;
-  emisorSanitized.codEstable = codEstableUsed;
-  emisorSanitized.codPuntoVentaMH = codPuntoUsed;
-  emisorSanitized.codPuntoVenta = codPuntoUsed;
+  const valorOperaciones = round2(Number(c.valorOperaciones));
+  const montoSinPercepcion = round2(Number(c.montoSinPercepcion) || 0);
+  const subTotal = round2(valorOperaciones - montoSinPercepcion);
+  if (!(subTotal > 0)) {
+    throw new DteInvalidoError('El valor de las operaciones debe ser mayor que los montos no sujetos a percepción.');
+  }
+  const iva = round2(subTotal * IVA);
+  const ivaPercibido = round2(subTotal * PERCEPCION);
+  const comision = round2(Number(c.comision) || 0);
+  const ivaComision = round2(comision * IVA);
+  const liquidoApagar = round2(valorOperaciones + iva - ivaPercibido - comision - ivaComision);
+  if (!(liquidoApagar > 0)) {
+    throw new DteInvalidoError('La comisión no puede dejar el líquido a pagar en cero o negativo.');
+  }
 
-  const codGeneracion = req.body.identificacion?.codigoGeneracion
-    ? req.body.identificacion.codigoGeneracion.toUpperCase()
-    : uuidv4().toUpperCase();
-
-  const dteBase: any = {
-    identificacion: obtenerIdentificacionBase(
-      req.body.identificacion || {},
-      '09',
-      numControl,
-      codGeneracion,
-      fecEmi,
-      horEmi,
-      emisorDb
-    ),
-    emisor: emisorSanitized,
-    receptor: receptorSanitized,
-    cuerpoDocumento: cuerpoSanitized,
-    resumen: resumenSanitized,
+  const documento = {
+    identificacion: identificacionSinContingencia(req, '09', versionDte, emisorDb),
+    emisor: emisorV2(emisorDb),
+    receptor: {
+      nit: String(receptor?.numDocumento ?? receptor?.nit ?? '').replace(/-/g, '').trim(),
+      nrc: textoONull(receptor?.nrc)?.replace(/-/g, '') ?? null,
+      nombre: textoONull(receptor?.nombre),
+      codActividad: textoONull(receptor?.codActividad),
+      descActividad: textoONull(receptor?.descActividad),
+      nombreComercial: textoONull(receptor?.nombreComercial),
+      tipoEstablecimiento: textoONull(receptor?.tipoEstablecimiento),
+      direccion: direccionObligatoria(receptor?.direccion, 'del receptor'),
+      telefono: textoONull(receptor?.telefono),
+      correo: textoONull(receptor?.correo)
+    },
+    cuerpoDocumento: {
+      periodoLiquidacionFechaInicio: c.periodoLiquidacionFechaInicio,
+      periodoLiquidacionFechaFin: c.periodoLiquidacionFechaFin,
+      codLiquidacion: textoONull(c.codLiquidacion),
+      cantidadDoc: Number(c.cantidadDoc) > 0 ? Number(c.cantidadDoc) : null,
+      valorOperaciones,
+      montoSinPercepcion,
+      descripSinPercepcion: textoONull(c.descripSinPercepcion),
+      subTotal,
+      iva,
+      montoSujetoPercepcion: subTotal,
+      ivaPercibido,
+      comision,
+      porcentComision: round2(Number(c.porcentComision) || 0),
+      ivaComision,
+      liquidoApagar,
+      totalLetras: montoEnLetras(liquidoApagar),
+      observaciones: textoONull(c.observaciones)
+    },
+    extension: {
+      nombEntrega: textoONull(extension?.nombEntrega),
+      docuEntrega: textoONull(extension?.docuEntrega),
+      codEmpleado: textoONull(extension?.codEmpleado)
+    },
     apendice: null
   };
 
-  return dteBase;
+  return validarYNumerar(documento, '09', emisorDb);
 }

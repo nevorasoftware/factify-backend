@@ -1,14 +1,8 @@
 import { montoEnLetras } from '../utils/letras';
 import {
   IVA, round2, direccionObligatoria, documentosRelacionadosV2, emisorV2, identificacionV2,
-  lineasBase, pagosV2, sumarLineas, textoONull, validarYNumerar
+  lineasBase, pagosV2, sumarLineas, textoONull, tipoDocumentoReceptor, validarYNumerar
 } from './v2';
-
-function tipoDocumentoReceptor(numDocumento: string): string {
-  if (/^[0-9]{8}-[0-9]$/.test(numDocumento)) return '13';
-  if (/^([0-9]{14}|[0-9]{9})$/.test(numDocumento.replace(/-/g, ''))) return '36';
-  return '37';
-}
 
 function receptorFactura(receptor: any) {
   const nombre = textoONull(receptor?.nombre);

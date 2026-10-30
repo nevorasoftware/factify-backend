@@ -1,105 +1,61 @@
-import { v4 as uuidv4 } from 'uuid';
-import { round2, obtenerEmisorBase, sanearNumeroControl, obtenerSiguienteCorrelativo, obtenerIdentificacionBase } from './common';
+import { montoEnLetras } from '../utils/letras';
+import { DteInvalidoError } from '../services/schema.service';
+import { IVA, round2, emisorV2, identificacionV2, receptorConDocumento, textoONull, validarYNumerar } from './v2';
+
+// CAT-006: 22 y C4 tienen tasa fija; C9 (casos especiales) trae el valor retenido.
+const TASAS_RETENCION: Record<string, number> = { '22': 0.01, C4: 0.13 };
+
+function lineaRetencion(item: any, idx: number) {
+  const montoSujetoGrav = round2(Number(item.montoSujetoGrav));
+  const codigoRetencionMH = String(item.codigoRetencionMH || '').toUpperCase();
+  if (!(montoSujetoGrav > 0)) {
+    throw new DteInvalidoError(`El ítem ${idx + 1} debe tener un monto sujeto a retención mayor que cero.`);
+  }
+  if (!['22', 'C4', 'C9'].includes(codigoRetencionMH)) {
+    throw new DteInvalidoError(`El ítem ${idx + 1} tiene un código de retención inválido.`);
+  }
+  const tasa = TASAS_RETENCION[codigoRetencionMH];
+  const ivaRetenido = tasa ? round2(montoSujetoGrav * tasa) : round2(Number(item.ivaRetenido));
+  if (!(ivaRetenido > 0)) {
+    throw new DteInvalidoError(`El ítem ${idx + 1} debe tener un IVA retenido mayor que cero.`);
+  }
+  return {
+    numItem: idx + 1,
+    tipoDte: String(item.tipoDte || ''),
+    tipoGeneracion: Number(item.tipoGeneracion),
+    numeroDocumento: String(item.numeroDocumento || '').toUpperCase().trim(),
+    fechaEmision: item.fechaEmision,
+    montoSujetoGrav,
+    codigoRetencionMH,
+    ivaRetenido,
+    descripcion: textoONull(item.descripcion)
+  };
+}
 
 export async function construirDte07(req: any, versionDte: number, emisorDb: any) {
   const { receptor, cuerpoDocumento, resumen } = req.body;
-
-  const fechaActual = new Date();
-  const fecEmi = fechaActual.toLocaleDateString('en-CA', { timeZone: 'America/El_Salvador' });
-  const horEmi = fechaActual.toLocaleTimeString('en-GB', { timeZone: 'America/El_Salvador', hour12: false });
-
-  const emisorSanitized = obtenerEmisorBase(emisorDb);
-  const codEstable = String(emisorSanitized.codEstableMH || "0000").trim().padStart(4, '0');
-  const codPunto = String(emisorSanitized.codPuntoVentaMH || "0000").trim().padStart(4, '0');
-
-  // 1. Sanear Receptor
-  const receptorSanitized = {
-    tipoDocumento: receptor?.tipoDocumento || "36", 
-    numDocumento: String(receptor?.numDocumento || receptor?.nit || "00000000000000").toUpperCase().trim(),
-    nrc: receptor?.nrc || "000000",
-    nombre: receptor?.nombre || "Receptor Retencion",
-    codActividad: receptor?.codActividad || "46900",
-    descActividad: receptor?.descActividad || "Comercio al por mayor no especializado",
-    nombreComercial: receptor?.nombreComercial || receptor?.nombre || "Receptor Comercial",
-    direccion: receptor?.direccion ? {
-      departamento: receptor.direccion.departamento || "01",
-      municipio: receptor.direccion.municipio || "01",
-      complemento: (receptor.direccion.complemento && receptor.direccion.complemento.trim().length >= 10) 
-        ? receptor.direccion.complemento.trim() 
-        : "San Salvador, El Salvador"
-    } : { departamento: "01", municipio: "01", complemento: "San Salvador, El Salvador" },
-    telefono: receptor?.telefono || "22222222",
-    correo: receptor?.correo || "correo@ejemplo.com"
-  };
-
-  // 2. Sanear Cuerpo Documento
-  const cuerpoSanitized = cuerpoDocumento.map((item: any, idx: number) => {
-    const montoSujetoGrav = round2(item.montoSujetoGrav || item.montoGravado || item.montoTotal || item.ventaGravada || 0);
-    const ivaRetenido = round2(item.ivaRetenido || item.montoRetencionIVA || (montoSujetoGrav ? montoSujetoGrav * 0.01 : 0));
-
-    return {
-      numItem: idx + 1,
-      tipoDte: item.tipoDte || item.tipoDocumento || "03", 
-      tipoDoc: item.tipoDoc ? Number(item.tipoDoc) : (item.tipoGeneracion ? Number(item.tipoGeneracion) : 1), 
-      numDocumento: String(item.numDocumento || item.numeroDocumento || "00000000-0000-0000-0000-000000000000").toUpperCase().trim(),
-      fechaEmision: item.fechaEmision || item.fechaDocumento || fecEmi,
-      montoSujetoGrav: montoSujetoGrav,
-      codigoRetencionMH: item.codigoRetencionMH || "22", 
-      ivaRetenido: ivaRetenido, 
-      descripcion: item.descripcion || "Retencion de IVA"
-    };
-  });
-
-  // 3. Sanear Resumen
-  const totalSujetoRetencion = round2(cuerpoSanitized.reduce((acc: number, curr: any) => acc + (curr.montoSujetoGrav || 0), 0));
-  const totalIVAretenido = round2(cuerpoSanitized.reduce((acc: number, curr: any) => acc + (curr.ivaRetenido || 0), 0));
-  
-  const resumenSanitized = {
-    totalSujetoRetencion,
-    totalIVAretenido,
-    totalIVAretenidoLetras: resumen?.totalIVAretenidoLetras || "CERO DOLARES"
-  };
-
-  // 4. Secuencial de Control
-  let { numControl, needsGeneration, codEstableUsed, codPuntoUsed } = sanearNumeroControl(
-    req.body.identificacion?.numeroControl,
-    '07',
-    codEstable,
-    codPunto,
-    emisorDb.id
-  );
-
-  if (needsGeneration) {
-    numControl = await obtenerSiguienteCorrelativo('07', emisorDb.id, codEstable, codPunto, 1);
-    codEstableUsed = codEstable;
-    codPuntoUsed = codPunto;
+  if (!Array.isArray(cuerpoDocumento) || cuerpoDocumento.length === 0) {
+    throw new DteInvalidoError('El comprobante debe tener al menos un documento retenido.');
   }
 
-  emisorSanitized.codEstableMH = codEstableUsed;
-  emisorSanitized.codEstable = codEstableUsed;
-  emisorSanitized.codPuntoVentaMH = codPuntoUsed;
-  emisorSanitized.codPuntoVenta = codPuntoUsed;
+  const lineas = cuerpoDocumento.map(lineaRetencion);
+  const totalSujetoRetencion = round2(lineas.reduce((a: number, l: any) => a + l.montoSujetoGrav, 0));
+  const totalIvaRetenido = round2(lineas.reduce((a: number, l: any) => a + l.ivaRetenido, 0));
 
-  const codGeneracion = req.body.identificacion?.codigoGeneracion
-    ? req.body.identificacion.codigoGeneracion.toUpperCase()
-    : uuidv4().toUpperCase();
-
-  const dteBase: any = {
-    identificacion: obtenerIdentificacionBase(
-      req.body.identificacion || {},
-      '07',
-      numControl,
-      codGeneracion,
-      fecEmi,
-      horEmi,
-      emisorDb
-    ),
-    emisor: emisorSanitized,
-    receptor: receptorSanitized,
-    cuerpoDocumento: cuerpoSanitized,
-    resumen: resumenSanitized,
+  const documento = {
+    identificacion: identificacionV2(req, '07', versionDte, emisorDb),
+    emisor: emisorV2(emisorDb),
+    receptor: receptorConDocumento(receptor, { direccionRequerida: true }),
+    cuerpoDocumento: lineas,
+    resumen: {
+      totalSujetoRetencion,
+      totalIva: round2(totalSujetoRetencion * IVA),
+      totalIvaRetenido,
+      totalLetras: montoEnLetras(totalIvaRetenido),
+      observaciones: textoONull(resumen?.observaciones)
+    },
     apendice: null
   };
 
-  return dteBase;
+  return validarYNumerar(documento, '07', emisorDb);
 }
