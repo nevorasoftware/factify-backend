@@ -1203,6 +1203,10 @@ router.post('/dtes/:codigoGeneracion/verificar-mh', authMiddleware, async (req: 
     if (!dte) {
       return res.status(404).json({ success: false, error: 'DTE no encontrado' });
     }
+    // MH sigue respondiendo PROCESADO tras invalidar: ese estado no debe sobrescribir la invalidación.
+    if (dte.estado === 'INVALIDADO') {
+      return res.json({ success: true, estado: dte.estado, selloRecibido: dte.sello_recepcion_mh });
+    }
 
     const consulta = await consultarDteMh(dte.codigo_generacion, dte.tipo_dte, req.emisor);
     if (!consulta) {
@@ -1277,7 +1281,12 @@ router.post('/consulta-dte', authMiddleware, async (req: any, res: any) => {
       if (!resultado) {
         return res.json({ success: false, error: 'Hacienda no tiene registro de ese documento o no respondió.' });
       }
-      return res.json({ success: true, resultado });
+      const propio = await prisma.dteEmitido.findFirst({
+        where: { codigo_generacion: String(codigoGeneracion), emisor_id: emisorDb.id },
+        select: { estado: true }
+      });
+      // MH sigue respondiendo PROCESADO tras recibir la invalidación.
+      return res.json({ success: true, resultado: propio?.estado === 'INVALIDADO' ? { ...resultado, estado: 'INVALIDADO' } : resultado });
     }
 
     const dtes = await prisma.dteEmitido.findMany({
