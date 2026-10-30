@@ -5,6 +5,9 @@ import { IVA, round2, emisorV2, identificacionSinContingencia, receptorConDocume
 function lineaLiquidacion(item: any, idx: number) {
   const numero = (v: any) => redondear(Number(v) || 0, 8);
   const ventaGravada = numero(item.ventaGravada);
+  const exportaciones = numero(item.exportaciones);
+  // La venta local lleva IVA (20); la exportación, IVA al 0% (C3).
+  const tributos = [...(ventaGravada !== 0 ? ["20"] : []), ...(exportaciones !== 0 ? ["C3"] : [])];
   const numeroDocumento = String(item.numeroDocumento || '').toUpperCase().trim();
   if (!numeroDocumento || !item.fechaEmision) {
     throw new DteInvalidoError(`El ítem ${idx + 1} debe indicar el documento liquidado y su fecha.`);
@@ -18,8 +21,8 @@ function lineaLiquidacion(item: any, idx: number) {
     ventaNoSuj: numero(item.ventaNoSuj),
     ventaExenta: numero(item.ventaExenta),
     ventaGravada,
-    exportaciones: numero(item.exportaciones),
-    tributos: ventaGravada !== 0 ? ['20'] : null,
+    exportaciones,
+    tributos: tributos.length > 0 ? tributos : null,
     ivaItem: round2(ventaGravada * IVA),
     observaciones: textoONull(item.observaciones)
   };
@@ -44,6 +47,11 @@ export async function construirDte08(req: any, versionDte: number, emisorDb: any
   const ivaPerci = round2(Number(resumen?.ivaPerci) || 0);
   const total = round2(montoTotalOperacion + ivaPerci);
 
+  const tributosResumen = [
+    ...(iva !== 0 ? [{ codigo: '20', descripcion: 'Impuesto al Valor Agregado 13%', valor: iva }] : []),
+    ...(exportacion !== 0 ? [{ codigo: 'C3', descripcion: 'Impuesto al Valor Agregado (exportaciones) 0%', valor: 0 }] : [])
+  ];
+
   const documento = {
     identificacion: { ...identificacionSinContingencia(req, '08', versionDte, emisorDb), fusion: null },
     emisor: emisorV2(emisorDb),
@@ -58,7 +66,7 @@ export async function construirDte08(req: any, versionDte: number, emisorDb: any
       totalGravada,
       exportacion,
       subTotalVentas,
-      tributos: iva !== 0 ? [{ codigo: '20', descripcion: 'Impuesto al Valor Agregado 13%', valor: iva }] : null,
+      tributos: tributosResumen.length > 0 ? tributosResumen : null,
       montoTotalOperacion,
       ivaPerci,
       total,
