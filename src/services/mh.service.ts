@@ -96,7 +96,8 @@ export async function consultarDteMh(
     const token = await getMHToken(emisor);
     const response = await axios.post<RecepcionResponse>(
       `${baseMh(emisor.ambiente)}/fesv/recepcion/consultadte/`,
-      { nitEmisor: emisor.nit.replace(/-/g, ''), tdte: tipoDte, codigoGeneracion },
+      // Postgres devuelve el UUID en minúsculas; MH lo registra en mayúsculas.
+      { nitEmisor: emisor.nit.replace(/-/g, ''), tdte: tipoDte, codigoGeneracion: codigoGeneracion.toUpperCase() },
       { headers: { 'Content-Type': 'application/json', 'Authorization': token }, timeout: MH_TIMEOUT_MS }
     );
     return response.data?.estado ? response.data : null;
