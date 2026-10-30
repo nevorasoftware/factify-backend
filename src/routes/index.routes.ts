@@ -824,6 +824,11 @@ router.post('/dtes/:codigoGeneracion/reenviar-whatsapp', authMiddleware, async (
     const pdfUrl = `${baseUrl}/api/public/dtes/${tokenEnlace}/pdf`;
     const jsonUrl = `${baseUrl}/api/public/dtes/${tokenEnlace}/json`;
 
+    const pdfBuffer = await generarPdfDte({
+      ...dteCompleto,
+      emisor: { ...dteCompleto.emisor, logoUrl: req.emisor?.logo_url }
+    });
+
     const resultadoWa = await enviarWhatsappDteApi({
       destinoTelefono: finalTelefono,
       nombreReceptor,
@@ -833,13 +838,16 @@ router.post('/dtes/:codigoGeneracion/reenviar-whatsapp', authMiddleware, async (
       codigoGeneracion: dteCompleto.identificacion?.codigoGeneracion || dte.codigo_generacion,
       montoTotal,
       pdfUrl,
-      jsonUrl
+      jsonUrl,
+      pdfBuffer,
+      jsonCompleto: dteCompleto
     });
 
     res.json({
       success: true,
       message: resultadoWa.message,
       whatsappWebUrl: resultadoWa.whatsappWebUrl,
+      mensajesMeta: resultadoWa.mensajesMeta,
       destinoTelefono: finalTelefono
     });
   } catch (error: any) {
