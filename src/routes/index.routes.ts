@@ -502,6 +502,15 @@ const enviarDTEController = async (req: any, res: any) => {
   }
 };
 
+// Catálogos oficiales de MH que dependen de una lista larga (países, recintos, regímenes...)
+let catalogosGenerales: any = null;
+router.get('/catalogos/generales', (_req: any, res: any) => {
+  if (!catalogosGenerales) {
+    catalogosGenerales = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'catalogos', 'generales.json'), 'utf8'));
+  }
+  res.json({ success: true, ...catalogosGenerales });
+});
+
 // Catálogos oficiales de MH (CAT-012, CAT-013 y CAT-008)
 let territorio: any = null;
 router.get('/catalogos/territorio', (_req: any, res: any) => {
@@ -1416,6 +1425,7 @@ router.get('/dte-info/:codigoGeneracion', authMiddleware, async (req: any, res: 
         montoTotal: Number(dte.monto_total_operacion),
         estado: dte.estado,
         selloRecepcionMh: dte.sello_recepcion_mh,
+        receptor: (dte.json_enviado as any)?.receptor || null,
         cliente: dte.cliente ? {
           nombre: dte.cliente.nombre,
           numDocumento: dte.cliente.num_documento,

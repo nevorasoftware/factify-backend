@@ -98,7 +98,6 @@ function disenoPorTipo(dte: any) {
         ...tablaDocumentos(['Monto sujeto', 'Código', 'IVA retenido'], i => [fmtNum(i.montoSujetoGrav), String(i.codigoRetencionMH || ''), fmtNum(i.ivaRetenido)]),
         totalesFilas: [
           { label: 'Total sujeto a retención:', val: fmtNum(r.totalSujetoRetencion) },
-          { label: 'Total IVA:', val: fmtNum(r.totalIva) },
           { label: 'Total IVA retenido:', val: fmtNum(r.totalIvaRetenido) }
         ]
       };
@@ -121,7 +120,7 @@ function disenoPorTipo(dte: any) {
         filas: [[`${c.periodoLiquidacionFechaInicio || ''} a ${c.periodoLiquidacionFechaFin || ''}`, fmtNum(c.valorOperaciones), fmtNum(c.montoSinPercepcion), fmtNum(c.comision)]],
         totalesFilas: [
           { label: 'Subtotal:', val: fmtNum(c.subTotal) },
-          { label: 'IVA de las operaciones:', val: fmtNum(c.iva) },
+          { label: 'IVA incluido en las operaciones:', val: fmtNum(c.iva) },
           { label: 'IVA percibido (2%):', val: fmtNum(c.ivaPercibido) },
           { label: 'IVA de la comisión:', val: fmtNum(c.ivaComision) },
           { label: 'Líquido a pagar:', val: fmtNum(c.liquidoApagar) }

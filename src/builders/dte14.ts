@@ -24,6 +24,8 @@ export async function construirDte14(req: any, versionDte: number, emisorDb: any
 
   const { nombreComercial, ...emisor } = emisorV2(emisorDb);
   const { nrc, nombreComercial: _comercial, ...sujeto } = receptorConDocumento(receptor, { direccionRequerida: true });
+  // En este documento MH solo acepta el DUI sin guion.
+  if (sujeto.tipoDocumento === '13' && sujeto.numDocumento) sujeto.numDocumento = sujeto.numDocumento.replace(/-/g, '');
 
   const documento = {
     identificacion: identificacionV2(req, '14', versionDte, emisorDb),

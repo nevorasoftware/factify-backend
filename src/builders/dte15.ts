@@ -1,23 +1,28 @@
 import { montoEnLetras } from '../utils/letras';
 import { DteInvalidoError } from '../services/schema.service';
-import { round2, direccionObligatoria, emisorV2, identificacionSinContingencia, redondear, textoONull, validarYNumerar } from './v2';
+import { round2, emisorV2, identificacionSinContingencia, receptorConDocumento, redondear, textoONull, validarYNumerar } from './v2';
 
+// Manual Funcional, sección XX. CAT-026: 1 efectivo, 2 bien, 3 servicio.
 function lineaDonacion(item: any, idx: number) {
-  const cantidad = Number(item.cantidad);
+  const tipoDonacion = Number(item.tipoDonacion) || 1;
+  const esBien = tipoDonacion === 2;
+  const cantidad = tipoDonacion === 1 ? 1 : Number(item.cantidad);
   const valorUni = redondear(Number(item.valorUni ?? item.precioUni), 8);
-  if (!(cantidad > 0) || !(valorUni >= 0)) {
-    throw new DteInvalidoError(`El ítem ${idx + 1} tiene cantidad o valor inválidos.`);
+  const depreciacion = esBien ? redondear(Number(item.tipoDepreciacion) || 0, 8) : 0;
+  const valor = redondear(cantidad * valorUni - depreciacion, 8);
+  if (!(cantidad > 0) || !(valorUni >= 0) || valor < 0) {
+    throw new DteInvalidoError(`El ítem ${idx + 1} tiene cantidad, valor o depreciación inválidos.`);
   }
   return {
     numItem: idx + 1,
-    tipoDonacion: Number(item.tipoDonacion) || 1,
+    tipoDonacion,
     cantidad,
     codigo: textoONull(item.codigo),
-    uniMedida: Number(item.uniMedida) || 59,
+    uniMedida: esBien ? Number(item.uniMedida) || 59 : 99,
     descripcion: String(item.descripcion || '').trim(),
-    tipoDepreciacion: redondear(Number(item.tipoDepreciacion) || 0, 8),
+    tipoDepreciacion: depreciacion,
     valorUni,
-    valor: redondear(cantidad * valorUni, 8)
+    valor
   };
 }
 
@@ -35,21 +40,13 @@ export async function construirDte15(req: any, versionDte: number, emisorDb: any
   const valorTotal = round2(lineas.reduce((a: number, l: any) => a + l.valor, 0));
   const { nit, ...datosEmisor } = emisorV2(emisorDb);
   const pagoEntrada = Array.isArray(resumen?.pagos) ? resumen.pagos[0] : null;
-  const dir = receptor?.direccion;
+  const { nombreComercial, ...donante } = receptorConDocumento(receptor);
 
   const documento = {
     identificacion: identificacionSinContingencia(req, '15', versionDte, emisorDb),
     emisor: { tipoDocumento: '36', numDocumento: nit, ...datosEmisor },
     receptor: {
-      tipoDocumento: textoONull(receptor?.tipoDocumento),
-      numDocumento: textoONull(receptor?.numDocumento ?? receptor?.nit),
-      nrc: textoONull(receptor?.nrc)?.replace(/-/g, '') ?? null,
-      nombre: textoONull(receptor?.nombre),
-      codActividad: textoONull(receptor?.codActividad),
-      descActividad: textoONull(receptor?.descActividad),
-      direccion: dir?.distrito ? direccionObligatoria(dir, 'del donante') : null,
-      telefono: textoONull(receptor?.telefono),
-      correo: textoONull(receptor?.correo),
+      ...donante,
       codDomiciliado: Number(receptor?.codDomiciliado) || 1,
       codPais: textoONull(receptor?.codPais) || 'SV'
     },

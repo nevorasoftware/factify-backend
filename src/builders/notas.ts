@@ -24,6 +24,7 @@ function documentosRelacionadosNota(documentos: any) {
 }
 
 // Estructura común de la nota de crédito (05) y de débito (06). El precio no incluye IVA.
+// MH exige totalIva en 0: el IVA se informa como tributo 20 (lo contrario lo rechaza, código 020).
 export async function construirNota(req: any, tipoDte: '05' | '06', versionDte: number, emisorDb: any) {
   const { receptor, cuerpoDocumento, resumen } = req.body;
 
@@ -41,16 +42,16 @@ export async function construirNota(req: any, tipoDte: '05' | '06', versionDte: 
       numeroDocumento,
       tributos: l.ventaGravada > 0 ? ['20'] : null,
       ivaPerci: 0,
-      totalIva: round2(l.ventaGravada * IVA),
+      totalIva: 0,
       ivaRete: 0
     };
   });
 
   const { subTotalVentas, ...sumas } = sumarLineas(lineas);
-  const totalIva = round2(lineas.reduce((a: number, l: any) => a + l.totalIva, 0));
+  const iva = round2(lineas.reduce((a: number, l: any) => a + l.ventaGravada, 0) * IVA);
   const ivaPerci = round2(Number(resumen?.ivaPerci) || 0);
   const ivaRete = round2(Number(resumen?.ivaRete) || 0);
-  const montoTotalOperacion = round2(subTotalVentas + totalIva);
+  const montoTotalOperacion = round2(subTotalVentas + iva);
   const totalPagar = round2(montoTotalOperacion + ivaPerci - ivaRete);
 
   const documento: any = {
@@ -63,10 +64,10 @@ export async function construirNota(req: any, tipoDte: '05' | '06', versionDte: 
     resumen: {
       ...sumas,
       subTotalVentas,
-      tributos: totalIva > 0 ? [{ codigo: '20', descripcion: 'Impuesto al Valor Agregado 13%', valor: totalIva }] : null,
+      tributos: iva > 0 ? [{ codigo: '20', descripcion: 'Impuesto al Valor Agregado 13%', valor: iva }] : null,
       montoTotalOperacion,
       ivaPerci,
-      totalIva,
+      totalIva: 0,
       ivaRete,
       totalNoGravado: 0,
       totalPagar,

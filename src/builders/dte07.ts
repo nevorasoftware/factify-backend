@@ -1,6 +1,6 @@
 import { montoEnLetras } from '../utils/letras';
 import { DteInvalidoError } from '../services/schema.service';
-import { IVA, round2, emisorV2, identificacionV2, receptorConDocumento, textoONull, validarYNumerar } from './v2';
+import { round2, emisorV2, identificacionV2, receptorConDocumento, textoONull, validarYNumerar } from './v2';
 
 // CAT-006: 22 y C4 tienen tasa fija; C9 (casos especiales) trae el valor retenido.
 const TASAS_RETENCION: Record<string, number> = { '22': 0.01, C4: 0.13 };
@@ -49,7 +49,7 @@ export async function construirDte07(req: any, versionDte: number, emisorDb: any
     cuerpoDocumento: lineas,
     resumen: {
       totalSujetoRetencion,
-      totalIva: round2(totalSujetoRetencion * IVA),
+      totalIva: 0, // MH rechaza cualquier otro valor (código 020)
       totalIvaRetenido,
       totalLetras: montoEnLetras(totalIvaRetenido),
       observaciones: textoONull(resumen?.observaciones)

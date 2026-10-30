@@ -18,11 +18,13 @@ export async function construirDte09(req: any, versionDte: number, emisorDb: any
   if (!(subTotal > 0)) {
     throw new DteInvalidoError('El valor de las operaciones debe ser mayor que los montos no sujetos a percepción.');
   }
-  const iva = round2(subTotal * IVA);
-  const ivaPercibido = round2(subTotal * PERCEPCION);
+  // El valor de las operaciones ya incluye el IVA; la percepción se calcula sobre la base sin IVA.
+  const iva = round2(subTotal * IVA / (1 + IVA));
+  const montoSujetoPercepcion = round2(subTotal - iva);
+  const ivaPercibido = round2(montoSujetoPercepcion * PERCEPCION);
   const comision = round2(Number(c.comision) || 0);
   const ivaComision = round2(comision * IVA);
-  const liquidoApagar = round2(valorOperaciones + iva - ivaPercibido - comision - ivaComision);
+  const liquidoApagar = round2(valorOperaciones - ivaPercibido - comision - ivaComision);
   if (!(liquidoApagar > 0)) {
     throw new DteInvalidoError('La comisión no puede dejar el líquido a pagar en cero o negativo.');
   }
@@ -52,7 +54,7 @@ export async function construirDte09(req: any, versionDte: number, emisorDb: any
       descripSinPercepcion: textoONull(c.descripSinPercepcion),
       subTotal,
       iva,
-      montoSujetoPercepcion: subTotal,
+      montoSujetoPercepcion,
       ivaPercibido,
       comision,
       porcentComision: round2(Number(c.porcentComision) || 0),
