@@ -31,6 +31,7 @@ model Emisor {
   compras                Compra[]
   dtes                   DteEmitido[]
   productos              Producto[]
+  correlativos           Correlativo[]
 
   @@map("emisores")
 }
@@ -73,7 +74,8 @@ model DteEmitido {
   cliente_id            Int?
   tipo_dte              String    @db.VarChar(2)
   codigo_generacion     String    @unique @db.Uuid
-  numero_control        String    @unique @db.VarChar(31)
+  numero_control        String    @db.VarChar(31)
+  ambiente              String    @default("00") @db.VarChar(2)
   sello_recepcion_mh    String?   @db.VarChar(40)
   estado                String?   @default("PROCESANDO") @db.VarChar(20)
   fecha_emision         DateTime  @db.Date
@@ -88,7 +90,21 @@ model DteEmitido {
   cliente               Cliente?  @relation(fields: [cliente_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   emisor                Emisor    @relation(fields: [emisor_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([emisor_id, ambiente, numero_control])
+  @@index([emisor_id, estado])
   @@map("dtes_emitidos")
+}
+
+model Correlativo {
+  emisor_id             Int
+  ambiente              String @db.VarChar(2)
+  tipo_dte              String @db.VarChar(2)
+  establecimiento_punto String @db.VarChar(8)
+  ultimo                BigInt
+  emisor                Emisor @relation(fields: [emisor_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([emisor_id, ambiente, tipo_dte, establecimiento_punto])
+  @@map("correlativos")
 }
 
 model DteItem {

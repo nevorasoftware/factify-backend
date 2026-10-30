@@ -16,7 +16,8 @@ export async function firmarDocumento(nit: string, documentoJSON: any, pwdPri: s
     const response = await axios.post(config.firmador.url, payload, {
       headers: {
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: 30000
     });
 
     if (response.data.status === 'ERROR') {

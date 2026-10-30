@@ -14,6 +14,10 @@ interface AuthResponse {
 // Caché de tokens por emisor (llave: `${nit}_${ambiente}`)
 const cachedTokens = new Map<string, { token: string; expiration: number }>();
 
+export function invalidarTokenMH(emisor: { nit: string; ambiente: string }): void {
+  cachedTokens.delete(`${emisor.nit.replace(/-/g, '')}_${emisor.ambiente || '00'}`);
+}
+
 export async function getMHToken(emisor: { nit: string; pwd_mh: string; ambiente: string }): Promise<string> {
   const nitSanitized = emisor.nit.replace(/-/g, '');
   const cacheKey = `${nitSanitized}_${emisor.ambiente || '00'}`;
@@ -38,7 +42,8 @@ export async function getMHToken(emisor: { nit: string; pwd_mh: string; ambiente
     const response = await axios.post<AuthResponse>(urlAuth, form, {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded'
-      }
+      },
+      timeout: 15000
     });
 
     if (response.data.status !== 'OK') {

@@ -1,6 +1,8 @@
 import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
-import { enviarAlMH } from '../services/mh.service';
+import { enviarAlMH, consultarDteMh, EnvioIndeterminadoError } from '../services/mh.service';
+import { obtenerSiguienteCorrelativo } from '../builders/common';
+import { hashPassword, esHash, verificarPassword } from '../utils/password';
+import { crearTokenEnlace, leerTokenEnlace } from '../utils/enlace-publico';
 import { config } from '../config';
 import { verifyToken, generateToken } from '../utils/jwt';
 import { generarJsonDteCompleto } from '../services/dte-json.service';
@@ -9,6 +11,8 @@ import { enviarCorreoDte } from '../services/email.service';
 import { enviarWhatsappDteApi } from '../services/whatsapp.service';
 
 const router = Router();
+
+const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 const round2 = (num: number) => Number((Math.round((num + Number.EPSILON) * 100) / 100).toFixed(2));
 
@@ -60,10 +64,7 @@ export const authMiddleware = async (req: any, res: any, next: any) => {
 router.post('/auth/login', async (req: any, res: any) => {
   try {
     const { correo, password } = req.body;
-    console.log(`🔑 [LOGIN] Intento de login recibido para correo: "${correo}"`);
-
     if (!correo || !password) {
-      console.log('⚠️ [LOGIN] Correo o contraseña no provistos');
       return res.status(400).json({ success: false, error: 'Correo y contraseña son requeridos' });
     }
 
@@ -77,18 +78,16 @@ router.post('/auth/login', async (req: any, res: any) => {
       }
     });
 
-    if (!emisor) {
-      console.log(`⚠️ [LOGIN] Usuario con correo "${correo.trim()}" no existe en la base de datos.`);
-      return res.status(401).json({ success: false, error: 'Credenciales inválidas (usuario no registrado)' });
+    if (!emisor || !verificarPassword(password.trim(), emisor.password)) {
+      return res.status(401).json({ success: false, error: 'Credenciales inválidas' });
     }
 
-    // Validación de contraseña simple/plana para facilitar el mantenimiento por script SQL
-    if (emisor.password !== password.trim()) {
-      console.log(`⚠️ [LOGIN] Contraseña incorrecta para usuario "${correo.trim()}".`);
-      return res.status(401).json({ success: false, error: 'Credenciales inválidas (contraseña incorrecta)' });
+    // Contraseña heredada en texto plano: se reemplaza por su hash en el primer login correcto
+    if (!esHash(emisor.password || '')) {
+      await prisma.emisor.update({ where: { id: emisor.id }, data: { password: hashPassword(password.trim()) } });
     }
 
-    console.log(`✅ [LOGIN] Login exitoso para emisor ID: ${emisor.id} (${emisor.razon_social})`);
+    console.log(`✅ [LOGIN] Login exitoso para emisor ID: ${emisor.id}`);
 
     // Generar token JWT stateless
     const token = generateToken({
@@ -153,8 +152,12 @@ router.put('/auth/config', authMiddleware, async (req: any, res: any) => {
       codEstablecimientoMh, codPuntoVentaMh, logoUrl
     } = req.body;
 
+    if (ambiente !== undefined && ambiente !== emisor.ambiente && process.env.PERMITIR_CAMBIO_AMBIENTE !== 'true') {
+      return res.status(403).json({ success: false, error: 'El cambio de ambiente debe solicitarse a Nevora.' });
+    }
+
     const prisma = (await import('../db/prisma')).default;
-    
+
     const updated = await prisma.emisor.update({
       where: { id: emisor.id },
       data: {
@@ -227,151 +230,194 @@ const enviarDTEController = async (req: any, res: any) => {
     // Reconstruir y sanear el documento utilizando estrictamente los datos de perfil del emisorDb
     const documentoBase = await construirDteBase(req, tipoDte, versionDte, emisorDb);
 
-    // Enviar al MH y gestionar la auto-recuperación
+    // Forzar la versión vigente del tipo de documento, sin importar lo recibido
+    documentoBase.identificacion.version = versionDte;
+
+    const prisma = (await import('../db/prisma')).default;
+    const ambiente = emisorDb.ambiente || '00';
+
+    // Idempotencia: el mismo codigoGeneracion nunca se transmite dos veces
+    if (!UUID_REGEX.test(documentoBase.identificacion.codigoGeneracion || '')) {
+      return res.status(400).json({ success: false, error: 'codigoGeneracion inválido. Debe ser un UUID.' });
+    }
+    const existente = await prisma.dteEmitido.findUnique({
+      where: { codigo_generacion: documentoBase.identificacion.codigoGeneracion.toUpperCase() }
+    });
+    if (existente) {
+      if (existente.emisor_id === emisorDb.id && existente.estado === 'PROCESADO') {
+        return res.json({
+          success: true,
+          idempotente: true,
+          codigoGeneracion: documentoBase.identificacion.codigoGeneracion,
+          numeroControl: existente.numero_control,
+          selloRecibido: existente.sello_recepcion_mh,
+          resultado: existente.respuesta_mh,
+          dteCompleto: generarJsonDteCompleto(existente.json_enviado as any, null, existente.sello_recepcion_mh)
+        });
+      }
+      return res.status(409).json({ success: false, error: 'Ya existe un documento con ese codigoGeneracion.' });
+    }
+
+    // Guardar o recuperar el cliente asociado al DTE
+    let clienteId = null;
+    const receptorOrSujeto = documentoBase.receptor || documentoBase.sujetoExcluido || documentoBase.donante;
+
+    if (receptorOrSujeto && (receptorOrSujeto.numDocumento || receptorOrSujeto.nit)) {
+      const numDoc = receptorOrSujeto.numDocumento || receptorOrSujeto.nit;
+      let cliente = await prisma.cliente.findUnique({
+        where: {
+          emisor_id_num_documento: {
+            emisor_id: emisorDb.id,
+            num_documento: numDoc
+          }
+        }
+      });
+
+      if (!cliente) {
+        console.log(`👤 Cliente nuevo para el emisor ${emisorDb.id}. Creándolo...`);
+        cliente = await prisma.cliente.create({
+          data: {
+            emisor_id: emisorDb.id,
+            tipo_documento: receptorOrSujeto.tipoDocumento || (tipoDte === '03' ? '36' : '13'),
+            num_documento: numDoc,
+            nrc: receptorOrSujeto.nrc || null,
+            nombre: receptorOrSujeto.nombre || "Consumidor Final",
+            nombre_comercial: receptorOrSujeto.nombreComercial || null,
+            cod_actividad: receptorOrSujeto.codActividad || null,
+            desc_actividad: receptorOrSujeto.descActividad || null,
+            correo: receptorOrSujeto.correo || null,
+            telefono: receptorOrSujeto.telefono || null,
+            direccion: receptorOrSujeto.direccion || null
+          }
+        });
+      }
+      clienteId = cliente.id;
+    }
+
+    // Registrar el DTE antes de transmitir: si algo falla después, el documento no se pierde.
+    const montoOperacion = documentoBase.resumen ? (documentoBase.resumen.montoTotalOperacion || documentoBase.resumen.valorTotal || 0) : 0;
+    const totalPagar = documentoBase.resumen ? (documentoBase.resumen.totalPagar || documentoBase.resumen.valorTotal || 0) : 0;
+    const dteRegistrado = await prisma.dteEmitido.create({
+      data: {
+        emisor_id: emisorDb.id,
+        cliente_id: clienteId,
+        tipo_dte: tipoDte,
+        ambiente,
+        codigo_generacion: documentoBase.identificacion.codigoGeneracion.toUpperCase(),
+        numero_control: documentoBase.identificacion.numeroControl,
+        estado: 'PROCESANDO',
+        fecha_emision: new Date(documentoBase.identificacion.fecEmi + 'T00:00:00Z'),
+        hora_emision: new Date('1970-01-01T' + documentoBase.identificacion.horEmi + 'Z'),
+        monto_total_operacion: montoOperacion,
+        total_pagar: totalPagar,
+        json_enviado: documentoBase as any
+      }
+    });
+
+    // Enviar al MH
     let resultadoMH: any;
     let errorOcurrido: any = null;
+    let firmaElectronica: string | null = null;
     try {
-      resultadoMH = await enviarAlMH(documentoBase, tipoDte, versionDte, emisorDb);
+      let envio = await enviarAlMH(documentoBase, tipoDte, versionDte, emisorDb);
 
-      // Auto-recuperación ante rechazo por número de control duplicado (código 004)
+      // Número de control ya usado en MH (código 004): pedir el siguiente correlativo. Si el
+      // duplicado fuera el codigoGeneracion, no se reintenta: podría duplicar un documento fiscal.
       let intentos = 0;
       while (
-        resultadoMH.estado === 'RECHAZADO' &&
-        (resultadoMH.codigoMsg === '004' || (resultadoMH.descripcionMsg && resultadoMH.descripcionMsg.includes('YA EXISTE UN REGISTRO CON ESE VALOR'))) &&
+        envio.estado === 'RECHAZADO' &&
+        (envio.codigoMsg === '004' || (envio.descripcionMsg && envio.descripcionMsg.includes('YA EXISTE UN REGISTRO CON ESE VALOR'))) &&
+        !String(envio.descripcionMsg || '').toLowerCase().includes('codigogeneracion') &&
         intentos < 5
       ) {
         intentos++;
-        const currentNumControl = documentoBase.identificacion.numeroControl;
-        console.log(`⚠️ [DTE RETRY] MH rechazó por duplicado de número de control (${currentNumControl}). Intento de auto-recuperación ${intentos}/5. Incrementando correlativo...`);
-        
-        const parts = currentNumControl.split('-');
-        const lastPart = parts[parts.length - 1];
-        const correlativoNum = parseInt(lastPart, 10);
-        
-        if (!isNaN(correlativoNum)) {
-          const nextCorrelativoNum = correlativoNum + 1;
-          const nextCorrelativoStr = nextCorrelativoNum.toString().padStart(15, '0');
-          
-          parts[parts.length - 1] = nextCorrelativoStr;
-          const nuevoNumControl = parts.join('-');
-          
-          // Actualizar el documento base con el nuevo correlativo y un nuevo UUID para el intento
-          documentoBase.identificacion.numeroControl = nuevoNumControl;
-          documentoBase.identificacion.codigoGeneracion = uuidv4().toUpperCase();
-          
-          console.log(`🔄 [DTE RETRY] Re-intentando envío con nuevo numeroControl: "${nuevoNumControl}" y codigoGeneracion: "${documentoBase.identificacion.codigoGeneracion}"`);
-          resultadoMH = await enviarAlMH(documentoBase, tipoDte, versionDte, emisorDb);
-        } else {
-          break;
-        }
+        const actual: string = documentoBase.identificacion.numeroControl;
+        const establePunto = actual.split('-')[2];
+        console.log(`⚠️ [DTE RETRY] MH reporta ${actual} como duplicado. Intento ${intentos}/5.`);
+
+        documentoBase.identificacion.numeroControl = await obtenerSiguienteCorrelativo(
+          tipoDte, emisorDb.id, establePunto.substring(0, 4), establePunto.substring(4, 8), 1
+        );
+        await prisma.dteEmitido.update({
+          where: { id: dteRegistrado.id },
+          data: { numero_control: documentoBase.identificacion.numeroControl, json_enviado: documentoBase as any }
+        });
+        envio = await enviarAlMH(documentoBase, tipoDte, versionDte, emisorDb);
       }
+
+      const { documentoFirmado, ...respuesta } = envio;
+      firmaElectronica = documentoFirmado;
+      resultadoMH = respuesta;
     } catch (error: any) {
       console.error('⚠️ [DTE ERROR] Falló el envío al MH:', error.message || error);
       errorOcurrido = error;
-      resultadoMH = {
-        estado: 'RECHAZADO',
-        descripcionMsg: error.message || 'Error de conexión o firma al enviar al MH',
-        observaciones: []
-      };
+      if (error instanceof EnvioIndeterminadoError) {
+        // Puede haberse recibido: se consulta, nunca se marca como rechazado a ciegas.
+        const consulta = await consultarDteMh(documentoBase.identificacion.codigoGeneracion, tipoDte, emisorDb);
+        resultadoMH = consulta || { estado: 'PENDIENTE_MH', descripcionMsg: error.message, observaciones: [] };
+        if (consulta) errorOcurrido = null;
+      } else {
+        // Falló la autenticación o la firma: el documento no salió hacia MH.
+        resultadoMH = { estado: 'NO_ENVIADO', descripcionMsg: error.message || 'Error de firma o autenticación', observaciones: [] };
+      }
     }
 
-    // Guardar en la Base de Datos asociando el DTE al emisorDb actual o guardando el fallo
-    let clienteId = null;
-    try {
-      const prisma = (await import('../db/prisma')).default;
+    if (firmaElectronica) documentoBase.firmaElectronica = firmaElectronica;
 
-      const receptorOrSujeto = documentoBase.receptor || documentoBase.sujetoExcluido || documentoBase.donante;
-      
-      if (receptorOrSujeto && (receptorOrSujeto.numDocumento || receptorOrSujeto.nit)) {
-        const numDoc = receptorOrSujeto.numDocumento || receptorOrSujeto.nit;
-        let cliente = await prisma.cliente.findUnique({
-          where: {
-            emisor_id_num_documento: {
-              emisor_id: emisorDb.id,
-              num_documento: numDoc
-            }
-          }
-        });
+    // Guardar el resultado (reintenta: un sello de MH no puede perderse por un fallo momentáneo de BD)
+    const estadoFinal = resultadoMH.estado || 'RECHAZADO';
+    const esProcesado = estadoFinal === 'PROCESADO';
+    const itemsData = (Array.isArray(documentoBase.cuerpoDocumento) ? documentoBase.cuerpoDocumento : []).map((item: any) => ({
+      dte_id: dteRegistrado.id,
+      num_item: item.numItem,
+      cantidad: item.cantidad,
+      descripcion: item.descripcion,
+      precio_unitario: item.precioUni !== undefined ? item.precioUni : (item.valorUni !== undefined ? item.valorUni : (item.valorDonacion || 0)),
+      venta_gravada: item.ventaGravada || 0,
+      venta_exenta: item.ventaExenta || 0,
+      venta_nosujeta: item.ventaNoSuj || 0,
+      iva_item: item.ivaItem || 0,
+      tributos: item.tributos || null
+    }));
 
-        if (!cliente) {
-          console.log(`👤 Cliente con documento ${numDoc} no encontrado para este emisor. Creándolo...`);
-          cliente = await prisma.cliente.create({
+    let guardado = false;
+    for (let intento = 1; intento <= 3 && !guardado; intento++) {
+      try {
+        await prisma.$transaction([
+          prisma.dteEmitido.update({
+            where: { id: dteRegistrado.id },
             data: {
-              emisor_id: emisorDb.id,
-              tipo_documento: receptorOrSujeto.tipoDocumento || (tipoDte === '03' ? '36' : '13'),
-              num_documento: numDoc,
-              nrc: receptorOrSujeto.nrc || null,
-              nombre: receptorOrSujeto.nombre || "Consumidor Final",
-              nombre_comercial: receptorOrSujeto.nombreComercial || null,
-              cod_actividad: receptorOrSujeto.codActividad || null,
-              desc_actividad: receptorOrSujeto.descActividad || null,
-              correo: receptorOrSujeto.correo || null,
-              telefono: receptorOrSujeto.telefono || null,
-              direccion: receptorOrSujeto.direccion || null
+              sello_recepcion_mh: resultadoMH.selloRecibido || null,
+              estado: estadoFinal,
+              descripcion_rechazo: esProcesado
+                ? null
+                : `${resultadoMH.descripcionMsg || 'Rechazado por el MH'}${resultadoMH.observaciones && resultadoMH.observaciones.length > 0 ? ': ' + resultadoMH.observaciones.join('; ') : ''}`,
+              json_enviado: documentoBase as any,
+              respuesta_mh: resultadoMH as any
             }
-          });
-        }
-        clienteId = cliente.id;
+          }),
+          prisma.dteItem.createMany({ data: itemsData })
+        ]);
+        guardado = true;
+      } catch (dbError: any) {
+        console.error(`⚠️ Error guardando resultado del DTE ${dteRegistrado.id} (intento ${intento}/3):`, dbError.message || dbError);
+        await new Promise(resolve => setTimeout(resolve, 500 * intento));
       }
-
-      // Guardar el DTE Emitido principal (sea procesado o rechazado)
-      const newDte = await prisma.dteEmitido.create({
-        data: {
-          emisor_id: emisorDb.id,
-          cliente_id: clienteId,
-          tipo_dte: tipoDte,
-          codigo_generacion: (documentoBase.identificacion.codigoGeneracion || '').toUpperCase(),
-          numero_control: documentoBase.identificacion.numeroControl,
-          sello_recepcion_mh: resultadoMH.selloRecibido || null,
-          estado: resultadoMH.estado || 'RECHAZADO',
-          descripcion_rechazo: resultadoMH.estado === 'RECHAZADO'
-            ? `${resultadoMH.descripcionMsg || 'Rechazado por el MH'}${resultadoMH.observaciones && resultadoMH.observaciones.length > 0 ? ': ' + resultadoMH.observaciones.join('; ') : ''}`
-            : null,
-          fecha_emision: new Date(documentoBase.identificacion.fecEmi + 'T00:00:00Z'),
-          hora_emision: new Date('1970-01-01T' + documentoBase.identificacion.horEmi + 'Z'),
-          monto_total_operacion: documentoBase.resumen ? (documentoBase.resumen.montoTotalOperacion || documentoBase.resumen.valorTotal || 0) : 0,
-          total_pagar: documentoBase.resumen ? (documentoBase.resumen.totalPagar || documentoBase.resumen.valorTotal || 0) : 0,
-          json_enviado: documentoBase as any,
-          respuesta_mh: resultadoMH as any
-        }
-      });
-      console.log(`💾 DTE Guardado en PostgreSQL (Estado: ${newDte.estado}) para Emisor ID: ${emisorDb.id} con DTE ID: ${newDte.id}`);
-
-      // Guardar los ítems
-      if (documentoBase.cuerpoDocumento && documentoBase.cuerpoDocumento.length > 0) {
-        const itemsData = documentoBase.cuerpoDocumento.map((item: any) => ({
-          dte_id: newDte.id,
-          num_item: item.numItem,
-          cantidad: item.cantidad,
-          descripcion: item.descripcion,
-          precio_unitario: item.precioUni !== undefined ? item.precioUni : (item.valorUni !== undefined ? item.valorUni : (item.valorDonacion || 0)),
-          venta_gravada: item.ventaGravada || 0,
-          venta_exenta: item.ventaExenta || 0,
-          venta_nosujeta: item.ventaNoSuj || 0,
-          iva_item: item.ivaItem || 0,
-          tributos: item.tributos || null
-        }));
-
-        await prisma.dteItem.createMany({
-          data: itemsData
-        });
-      }
-
-    } catch (dbError: any) {
-      console.error('⚠️ Error guardando en BD (Prisma):', dbError.message || dbError);
+    }
+    if (!guardado) {
+      console.error(`🚨 [DTE SIN GUARDAR] id=${dteRegistrado.id} codigo=${documentoBase.identificacion.codigoGeneracion} estado=${estadoFinal} sello=${resultadoMH.selloRecibido || 'n/a'}`);
     }
 
     const dteCompleto = generarJsonDteCompleto(
       documentoBase,
-      documentoBase.firmaElectronica || null,
+      firmaElectronica,
       resultadoMH.selloRecibido || null
     );
 
-    let correoEnviado = false;
-
-    if (resultadoMH.estado === 'RECHAZADO') {
+    if (!esProcesado) {
       return res.json({
         success: false,
+        estado: estadoFinal,
         error: errorOcurrido ? `Fallo al procesar/enviar el DTE: ${errorOcurrido.message}` : 'Rechazado por el MH',
         resultado: resultadoMH,
         dteCompleto
@@ -401,6 +447,7 @@ const enviarDTEController = async (req: any, res: any) => {
         const TIPOS_DTE_NOMBRES: Record<string, string> = {
           '01': 'Factura',
           '03': 'Comprobante de Crédito Fiscal',
+          '04': 'Nota de Remisión',
           '05': 'Nota de Crédito',
           '06': 'Nota de Débito',
           '07': 'Comprobante de Retención',
@@ -461,16 +508,16 @@ router.post('/evento-contingencia', authMiddleware, (req, res) => res.json({ suc
 // =========================================================================
 // RUTAS PÚBLICAS PARA DESCARGA DIRECTA DE ARCHIVOS (Para WhatsApp API y Clientes)
 // =========================================================================
-router.get('/public/dtes/:codigoGeneracion/json', async (req: any, res: any) => {
+router.get('/public/dtes/:token/json', async (req: any, res: any) => {
   try {
-    const { codigoGeneracion } = req.params;
+    const codigoGeneracion = leerTokenEnlace(req.params.token);
+    if (!codigoGeneracion || !UUID_REGEX.test(codigoGeneracion)) {
+      return res.status(403).json({ success: false, error: 'Enlace inválido o vencido' });
+    }
     const prisma = (await import('../db/prisma')).default;
 
-    const isNum = /^[0-9]+$/.test(codigoGeneracion);
     const dte = await prisma.dteEmitido.findFirst({
-      where: isNum
-        ? { id: parseInt(codigoGeneracion, 10) }
-        : { codigo_generacion: codigoGeneracion.toUpperCase() }
+      where: { codigo_generacion: codigoGeneracion, estado: 'PROCESADO' }
     });
 
     if (!dte) {
@@ -497,16 +544,16 @@ router.get('/public/dtes/:codigoGeneracion/json', async (req: any, res: any) => 
   }
 });
 
-router.get('/public/dtes/:codigoGeneracion/pdf', async (req: any, res: any) => {
+router.get('/public/dtes/:token/pdf', async (req: any, res: any) => {
   try {
-    const { codigoGeneracion } = req.params;
+    const codigoGeneracion = leerTokenEnlace(req.params.token);
+    if (!codigoGeneracion || !UUID_REGEX.test(codigoGeneracion)) {
+      return res.status(403).json({ success: false, error: 'Enlace inválido o vencido' });
+    }
     const prisma = (await import('../db/prisma')).default;
 
-    const isNum = /^[0-9]+$/.test(codigoGeneracion);
     const dte = await prisma.dteEmitido.findFirst({
-      where: isNum
-        ? { id: parseInt(codigoGeneracion, 10) }
-        : { codigo_generacion: codigoGeneracion.toUpperCase() },
+      where: { codigo_generacion: codigoGeneracion, estado: 'PROCESADO' },
       include: { emisor: true }
     });
 
@@ -641,6 +688,10 @@ router.post('/dtes/:codigoGeneracion/reenviar-correo', authMiddleware, async (re
       return res.status(404).json({ success: false, error: 'DTE no encontrado' });
     }
 
+    if (dte.estado !== 'PROCESADO') {
+      return res.status(409).json({ success: false, error: 'Solo se pueden reenviar documentos procesados por Hacienda.' });
+    }
+
     const jsonEnviado = (dte.json_enviado as any) || {};
     const respuestaMH = (dte.respuesta_mh as any) || {};
     const selloRecibido = dte.sello_recepcion_mh || respuestaMH.selloRecibido || null;
@@ -725,6 +776,10 @@ router.post('/dtes/:codigoGeneracion/reenviar-whatsapp', authMiddleware, async (
       return res.status(404).json({ success: false, error: 'DTE no encontrado' });
     }
 
+    if (dte.estado !== 'PROCESADO') {
+      return res.status(409).json({ success: false, error: 'Solo se pueden reenviar documentos procesados por Hacienda.' });
+    }
+
     const jsonEnviado = (dte.json_enviado as any) || {};
     const respuestaMH = (dte.respuesta_mh as any) || {};
     const selloRecibido = dte.sello_recepcion_mh || respuestaMH.selloRecibido || null;
@@ -763,11 +818,11 @@ router.post('/dtes/:codigoGeneracion/reenviar-whatsapp', authMiddleware, async (
     const montoTotal = Number(dteCompleto.resumen?.totalPagar || dteCompleto.resumen?.montoTotalOperacion || 0).toFixed(2);
 
     const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-    const host = req.get('host');
-    const baseUrl = `${protocol}://${host}`;
+    const baseUrl = process.env.PUBLIC_BASE_URL || `${protocol}://${req.get('host')}`;
 
-    const pdfUrl = `${baseUrl}/api/public/dtes/${dte.codigo_generacion}/pdf`;
-    const jsonUrl = `${baseUrl}/api/public/dtes/${dte.codigo_generacion}/json`;
+    const tokenEnlace = crearTokenEnlace(dte.codigo_generacion);
+    const pdfUrl = `${baseUrl}/api/public/dtes/${tokenEnlace}/pdf`;
+    const jsonUrl = `${baseUrl}/api/public/dtes/${tokenEnlace}/json`;
 
     const resultadoWa = await enviarWhatsappDteApi({
       destinoTelefono: finalTelefono,
@@ -789,6 +844,41 @@ router.post('/dtes/:codigoGeneracion/reenviar-whatsapp', authMiddleware, async (
     });
   } catch (error: any) {
     console.error('Error al reenviar DTE por WhatsApp:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Consulta en MH un documento cuyo envío quedó sin confirmar
+router.post('/dtes/:codigoGeneracion/verificar-mh', authMiddleware, async (req: any, res: any) => {
+  try {
+    const { codigoGeneracion } = req.params;
+    if (!UUID_REGEX.test(codigoGeneracion)) {
+      return res.status(400).json({ success: false, error: 'Código de generación inválido' });
+    }
+    const prisma = (await import('../db/prisma')).default;
+    const dte = await prisma.dteEmitido.findFirst({
+      where: { codigo_generacion: codigoGeneracion.toUpperCase(), emisor_id: req.emisor.id }
+    });
+    if (!dte) {
+      return res.status(404).json({ success: false, error: 'DTE no encontrado' });
+    }
+
+    const consulta = await consultarDteMh(dte.codigo_generacion, dte.tipo_dte, req.emisor);
+    if (!consulta) {
+      return res.json({ success: false, estado: dte.estado, error: 'Hacienda no reporta este documento o no respondió.' });
+    }
+
+    const actualizado = await prisma.dteEmitido.update({
+      where: { id: dte.id },
+      data: {
+        estado: consulta.estado,
+        sello_recepcion_mh: consulta.selloRecibido || dte.sello_recepcion_mh,
+        respuesta_mh: consulta as any
+      }
+    });
+    res.json({ success: true, estado: actualizado.estado, selloRecibido: actualizado.sello_recepcion_mh });
+  } catch (error: any) {
+    console.error('Error al verificar DTE en MH:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -861,7 +951,7 @@ router.get('/dashboard/stats', authMiddleware, async (req: any, res: any) => {
 
     // Sumar montos totales del emisor
     const aggregateMonto = await prisma.dteEmitido.aggregate({
-      where: { emisor_id: emisorDb.id },
+      where: { emisor_id: emisorDb.id, estado: 'PROCESADO' },
       _sum: {
         total_pagar: true
       }
@@ -892,10 +982,10 @@ router.get('/dashboard/stats', authMiddleware, async (req: any, res: any) => {
       const estado = (group.estado || '').toUpperCase();
       const count = group._count._all;
       if (estado === 'PROCESADO') stats.procesados = count;
-      else if (estado === 'PROCESANDO') stats.pendientes = count;
+      else if (estado === 'PROCESANDO' || estado === 'PENDIENTE_MH') stats.pendientes += count;
       else if (estado === 'BORRADOR') stats.borrador = count;
       else if (estado === 'ENVIADO') stats.enviado = count;
-      else if (estado === 'RECHAZADO') stats.rechazado = count;
+      else if (estado === 'RECHAZADO' || estado === 'NO_ENVIADO') stats.rechazado += count;
       else if (estado === 'INVALIDADO') stats.invalidado = count;
     });
 

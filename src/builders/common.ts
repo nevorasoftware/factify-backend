@@ -58,67 +58,23 @@ export function obtenerEmisorBase(emisorDb: any) {
   };
 }
 
+// El número de control lo asigna siempre el backend; el valor recibido del cliente se ignora.
 export function sanearNumeroControl(
-  numControl: string | undefined,
-  tipoDte: string,
+  _numControl: string | undefined,
+  _tipoDte: string,
   codEstable: string,
   codPunto: string,
-  emisorId: number
+  _emisorId: number
 ): { numControl: string; needsGeneration: boolean; codEstableUsed: string; codPuntoUsed: string } {
-  const estFormatted = formatearCodEstableMH(codEstable);
-  const ptoFormatted = formatearCodPuntoVentaMH(codPunto);
-  const expectedPattern = new RegExp(`^DTE-${tipoDte}-(M|B|S|P)[0-9]{3}P[0-9]{3}-[0-9]{15}$`);
-
-  if (!numControl) {
-    return { numControl: '', needsGeneration: true, codEstableUsed: estFormatted, codPuntoUsed: ptoFormatted };
-  }
-
-  let cleaned = String(numControl).trim().toUpperCase();
-  cleaned = cleaned.replace(new RegExp(`^DTE-${tipoDte}-`), '').replace(/^DTE-/, '');
-  const parts = cleaned.split('-');
-  const cleanParts = parts.map(p => p.replace(/[^A-Z0-9]/g, '')).filter(p => p.length > 0);
-
-  if (cleanParts.length >= 2) {
-    const rawCorrelativo = cleanParts[cleanParts.length - 1];
-    const rawEstablePunto = cleanParts.slice(0, cleanParts.length - 1).join('');
-    let estUsed = estFormatted;
-    let ptoUsed = ptoFormatted;
-
-    if (rawEstablePunto.length === 8) {
-      estUsed = formatearCodEstableMH(rawEstablePunto.substring(0, 4));
-      ptoUsed = formatearCodPuntoVentaMH(rawEstablePunto.substring(4, 8));
-    }
-
-    const establePunto = `${estUsed}${ptoUsed}`;
-    const correlativoNum = parseInt(rawCorrelativo, 10);
-    if (!isNaN(correlativoNum) && correlativoNum > 0) {
-      const correlativo = correlativoNum.toString().padStart(15, '0');
-      const finalNum = `DTE-${tipoDte}-${establePunto}-${correlativo}`;
-      return {
-        numControl: finalNum,
-        needsGeneration: !expectedPattern.test(finalNum),
-        codEstableUsed: estUsed,
-        codPuntoUsed: ptoUsed
-      };
-    }
-  } else if (cleanParts.length === 1 && /^[0-9]+$/.test(cleanParts[0])) {
-    const correlativoNum = parseInt(cleanParts[0], 10);
-    if (!isNaN(correlativoNum) && correlativoNum > 0) {
-      const correlativo = correlativoNum.toString().padStart(15, '0');
-      const establePunto = `${estFormatted}${ptoFormatted}`;
-      const finalNum = `DTE-${tipoDte}-${establePunto}-${correlativo}`;
-      return {
-        numControl: finalNum,
-        needsGeneration: !expectedPattern.test(finalNum),
-        codEstableUsed: estFormatted,
-        codPuntoUsed: ptoFormatted
-      };
-    }
-  }
-
-  return { numControl: '', needsGeneration: true, codEstableUsed: estFormatted, codPuntoUsed: ptoFormatted };
+  return {
+    numControl: '',
+    needsGeneration: true,
+    codEstableUsed: formatearCodEstableMH(codEstable),
+    codPuntoUsed: formatearCodPuntoVentaMH(codPunto)
+  };
 }
 
+// Reserva atómica: dos emisiones simultáneas nunca reciben el mismo correlativo.
 export async function obtenerSiguienteCorrelativo(
   tipoDte: string,
   emisorId: number,
@@ -126,32 +82,31 @@ export async function obtenerSiguienteCorrelativo(
   codPunto: string,
   correlativoInicial: number
 ): Promise<string> {
-  const estFormatted = formatearCodEstableMH(codEstable);
-  const ptoFormatted = formatearCodPuntoVentaMH(codPunto);
-  const establePunto = `${estFormatted}${ptoFormatted}`;
+  const establePunto = `${formatearCodEstableMH(codEstable)}${formatearCodPuntoVentaMH(codPunto)}`;
+  const prefijo = `DTE-${tipoDte}-${establePunto}-`;
 
-  let correlativoNum = correlativoInicial;
-  try {
-    const prisma = (await import('../db/prisma')).default;
-    const lastDte = await prisma.dteEmitido.findFirst({
-      where: { tipo_dte: tipoDte, emisor_id: emisorId },
-      orderBy: { id: 'desc' }
-    });
-    if (lastDte && lastDte.numero_control) {
-      const parts = lastDte.numero_control.split('-');
-      const lastNumStr = parts[parts.length - 1];
-      if (lastNumStr) {
-        const lastNum = parseInt(lastNumStr, 10);
-        if (!isNaN(lastNum) && lastNum >= correlativoInicial) {
-          correlativoNum = lastNum + 1;
-        }
-      }
-    }
-  } catch (e) {
-    console.error(`⚠️ No se pudo obtener secuencial de BD para DTE ${tipoDte}, usando ${correlativoInicial}`);
-  }
-  const correlativo = correlativoNum.toString().padStart(15, '0');
-  return `DTE-${tipoDte}-${establePunto}-${correlativo}`;
+  const prisma = (await import('../db/prisma')).default;
+  const emisor = await prisma.emisor.findUnique({ where: { id: emisorId }, select: { ambiente: true } });
+  const ambiente = emisor?.ambiente || '00';
+
+  const filas = await prisma.$queryRaw<{ ultimo: bigint }[]>`
+    INSERT INTO correlativos (emisor_id, ambiente, tipo_dte, establecimiento_punto, ultimo)
+    VALUES (
+      ${emisorId}, ${ambiente}, ${tipoDte}, ${establePunto},
+      GREATEST(
+        ${correlativoInicial}::bigint,
+        COALESCE((
+          SELECT MAX(CAST(RIGHT(numero_control, 15) AS BIGINT)) + 1
+          FROM dtes_emitidos
+          WHERE emisor_id = ${emisorId} AND ambiente = ${ambiente} AND numero_control LIKE ${prefijo + '%'}
+        ), 1)
+      )
+    )
+    ON CONFLICT (emisor_id, ambiente, tipo_dte, establecimiento_punto)
+    DO UPDATE SET ultimo = correlativos.ultimo + 1
+    RETURNING ultimo`;
+
+  return `${prefijo}${filas[0].ultimo.toString().padStart(15, '0')}`;
 }
 
 export function obtenerIdentificacionBase(identificacionOriginal: any, tipoDte: string, numControl: string, codGeneracion: string, fecEmi: string, horEmi: string, emisorDb: any) {
@@ -165,8 +120,8 @@ export function obtenerIdentificacionBase(identificacionOriginal: any, tipoDte: 
     tipoOperacion: identificacionOriginal.tipoOperacion || 1,
     tipoContingencia: identificacionOriginal.tipoContingencia || null,
     motivoContin: identificacionOriginal.motivoContin || identificacionOriginal.motivoContigencia || null,
-    fecEmi: identificacionOriginal.fecEmi || fecEmi,
-    horEmi: identificacionOriginal.horEmi || horEmi,
+    fecEmi: fecEmi,
+    horEmi: horEmi,
     tipoMoneda: identificacionOriginal.tipoMoneda || 'USD'
   };
 }

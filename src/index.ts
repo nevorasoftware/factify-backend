@@ -6,9 +6,21 @@ const app = express();
 const port = process.env.PORT || 4001;
 
 // Middleware
-app.use(cors());
+// CORS_ORIGINS: frontends autorizados, separados por comas. Sin definir queda abierto.
+const origenes = (process.env.CORS_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean);
+app.use(cors(origenes.length > 0 ? { origin: origenes } : undefined));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+app.get('/health', async (_req, res) => {
+  try {
+    const prisma = (await import('./db/prisma')).default;
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: 'ok', commit: process.env.RAILWAY_GIT_COMMIT_SHA || null });
+  } catch {
+    res.status(503).json({ status: 'error' });
+  }
+});
 
 // Routes
 app.use('/api', routes);
