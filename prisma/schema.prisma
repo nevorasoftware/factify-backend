@@ -32,6 +32,7 @@ model Emisor {
   dtes                   DteEmitido[]
   productos              Producto[]
   correlativos           Correlativo[]
+  eventos                EventoDte[]
 
   @@map("emisores")
 }
@@ -93,6 +94,24 @@ model DteEmitido {
   @@unique([emisor_id, ambiente, numero_control])
   @@index([emisor_id, estado])
   @@map("dtes_emitidos")
+}
+
+model EventoDte {
+  id                 Int       @id @default(autoincrement())
+  emisor_id          Int
+  dte_id             Int?
+  tipo               String    @db.VarChar(20)
+  ambiente           String    @default("00") @db.VarChar(2)
+  codigo_generacion  String    @unique @db.Uuid
+  estado             String    @default("PROCESANDO") @db.VarChar(20)
+  sello_recepcion_mh String?   @db.VarChar(40)
+  json_enviado       Json?
+  respuesta_mh       Json?
+  created_at         DateTime? @default(now()) @db.Timestamp(6)
+  emisor             Emisor    @relation(fields: [emisor_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([emisor_id, tipo])
+  @@map("eventos_dte")
 }
 
 model Correlativo {

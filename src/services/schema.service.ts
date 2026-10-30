@@ -15,7 +15,9 @@ const SCHEMAS: Record<string, string> = {
   '09': 'v2/fe-dcl-v2.json',
   '11': 'v3/fe-fex-v3.json',
   '14': 'v2/fe-fse-v2.json',
-  '15': 'v2/fe-cd-v2.json'
+  '15': 'v2/fe-cd-v2.json',
+  INVALIDACION: 'v3/invalidacion-schema-v3.json',
+  CONTINGENCIA: 'v4/contingencia-schema-v4.json'
 };
 
 export class DteInvalidoError extends Error {

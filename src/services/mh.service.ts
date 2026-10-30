@@ -86,6 +86,42 @@ export async function enviarAlMH(
   }
 }
 
+// Firma y transmite un evento. Sin respuesta de MH el resultado se desconoce: se reporta como pendiente.
+export async function enviarEventoMh(
+  ruta: 'anulardte' | 'contingencia',
+  evento: any,
+  emisor: EmisorMH,
+  datosEnvio: Record<string, any>
+): Promise<any> {
+  const nit = emisor.nit.replace(/-/g, '');
+  let token = await getMHToken(emisor);
+  const documento = await firmarDocumento(nit, evento, emisor.pwd_firmador || '');
+  const enviar = () => axios.post(`${baseMh(emisor.ambiente)}/fesv/${ruta}`, { ...datosEnvio, documento }, {
+    headers: { 'Content-Type': 'application/json', 'Authorization': token },
+    timeout: MH_TIMEOUT_MS
+  });
+
+  try {
+    let response;
+    try {
+      response = await enviar();
+    } catch (error: any) {
+      if (error.response?.status !== 401) throw error;
+      invalidarTokenMH(emisor);
+      token = await getMHToken(emisor);
+      response = await enviar();
+    }
+    return { ...response.data, documentoFirmado: documento };
+  } catch (error: any) {
+    if (error.response && error.response.status < 500 && error.response.data?.estado) {
+      return { ...error.response.data, documentoFirmado: documento };
+    }
+    throw new EnvioIndeterminadoError(
+      `Hacienda no confirmó la recepción (${error.response?.status || error.code || error.message})`
+    );
+  }
+}
+
 // Devuelve null si MH no conoce el documento o no se pudo consultar.
 export async function consultarDteMh(
   codigoGeneracion: string,

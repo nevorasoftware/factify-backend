@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { enviarAlMH, consultarDteMh, EnvioIndeterminadoError } from '../services/mh.service';
+import { enviarAlMH, enviarEventoMh, consultarDteMh, EnvioIndeterminadoError } from '../services/mh.service';
+import { construirEventoContingencia, construirEventoInvalidacion } from '../builders/eventos';
+import { firmarDocumento } from '../services/firmador.service';
 import { obtenerSiguienteCorrelativo } from '../builders/common';
 import { hashPassword, esHash, verificarPassword } from '../utils/password';
 import { crearTokenEnlace, leerTokenEnlace } from '../utils/enlace-publico';
@@ -210,6 +212,25 @@ const construirDteBase = async (req: any, tipoDte: string, versionDte: number, e
   return construirDte(req, tipoDte, versionDte, emisorDb);
 };
 
+const TIPOS_DTE_NOMBRES: Record<string, string> = {
+  '01': 'Factura',
+  '03': 'Comprobante de Crédito Fiscal',
+  '04': 'Nota de Remisión',
+  '05': 'Nota de Crédito',
+  '06': 'Nota de Débito',
+  '07': 'Comprobante de Retención',
+  '08': 'Comprobante de Liquidación',
+  '09': 'Documento Contable de Liquidación',
+  '11': 'Factura de Exportación',
+  '14': 'Factura de Sujeto Excluido',
+  '15': 'Comprobante de Donación'
+};
+
+// Manual Funcional VIII: documentos que admiten contingencia.
+const TIPOS_EN_CONTINGENCIA = ['01', '03', '04', '05', '06', '07', '11', '14'];
+const ESTADO_CONTINGENCIA = 'CONTINGENCIA';
+const ESTADO_INFORMADO = 'INFORMADO_MH';
+
 // Cada tipo nombra distinto su monto: retención, liquidaciones y donación no tienen total a pagar.
 const montosDelDte = (dte: any) => {
   const r = dte.resumen || {};
@@ -239,6 +260,11 @@ const enviarDTEController = async (req: any, res: any) => {
     else if (req.path === '/factura-exportacion') { tipoDte = '11'; versionDte = 3; }
     else if (req.path === '/factura-sujeto-excluido') { tipoDte = '14'; versionDte = 2; }
     else if (req.path === '/comprobante-donacion') { tipoDte = '15'; versionDte = 2; }
+
+    const enContingencia = !!req.body.contingencia;
+    if (enContingencia && !TIPOS_EN_CONTINGENCIA.includes(tipoDte)) {
+      return res.status(422).json({ success: false, error: 'Este tipo de documento no se puede emitir en contingencia.' });
+    }
 
     // Reconstruir y sanear el documento utilizando estrictamente los datos de perfil del emisorDb
     const documentoBase = await construirDteBase(req, tipoDte, versionDte, emisorDb);
@@ -331,7 +357,15 @@ const enviarDTEController = async (req: any, res: any) => {
     let errorOcurrido: any = null;
     let firmaElectronica: string | null = null;
     try {
-      let envio = await enviarAlMH(documentoBase, tipoDte, versionDte, emisorDb);
+      // En contingencia el documento solo se firma; se transmite tras informar el evento.
+      let envio: any = enContingencia
+        ? {
+            estado: ESTADO_CONTINGENCIA,
+            descripcionMsg: 'Documento transitorio: pendiente de informar a Hacienda',
+            observaciones: [],
+            documentoFirmado: await firmarDocumento(emisorDb.nit.replace(/-/g, ''), documentoBase, emisorDb.pwd_firmador || '')
+          }
+        : await enviarAlMH(documentoBase, tipoDte, versionDte, emisorDb);
 
       // Número de control ya usado en MH (código 004): pedir el siguiente correlativo. Si el
       // duplicado fuera el codigoGeneracion, no se reintenta: podría duplicar un documento fiscal.
@@ -402,7 +436,7 @@ const enviarDTEController = async (req: any, res: any) => {
             data: {
               sello_recepcion_mh: resultadoMH.selloRecibido || null,
               estado: estadoFinal,
-              descripcion_rechazo: esProcesado
+              descripcion_rechazo: esProcesado || estadoFinal === ESTADO_CONTINGENCIA
                 ? null
                 : `${resultadoMH.descripcionMsg || 'Rechazado por el MH'}${resultadoMH.observaciones && resultadoMH.observaciones.length > 0 ? ': ' + resultadoMH.observaciones.join('; ') : ''}`,
               json_enviado: documentoBase as any,
@@ -426,6 +460,19 @@ const enviarDTEController = async (req: any, res: any) => {
       firmaElectronica,
       resultadoMH.selloRecibido || null
     );
+
+    if (estadoFinal === ESTADO_CONTINGENCIA) {
+      return res.json({
+        success: true,
+        estado: estadoFinal,
+        codigoGeneracion: documentoBase.identificacion.codigoGeneracion,
+        numeroControl: documentoBase.identificacion.numeroControl,
+        resultado: resultadoMH,
+        dteCompleto,
+        pdfUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/pdf`,
+        jsonUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/json`
+      });
+    }
 
     if (!esProcesado) {
       return res.json({
@@ -457,19 +504,6 @@ const enviarDTEController = async (req: any, res: any) => {
           emisor: { ...dteCompleto.emisor, logoUrl: emisorDb.logo_url }
         };
         const pdfBuffer = await generarPdfDte(dtePdfObj);
-        const TIPOS_DTE_NOMBRES: Record<string, string> = {
-          '01': 'Factura',
-          '03': 'Comprobante de Crédito Fiscal',
-          '04': 'Nota de Remisión',
-          '05': 'Nota de Crédito',
-          '06': 'Nota de Débito',
-          '07': 'Comprobante de Retención',
-          '08': 'Comprobante de Liquidación',
-          '09': 'Documento Contable de Liquidación',
-          '11': 'Factura de Exportación',
-          '14': 'Factura de Sujeto Excluido',
-          '15': 'Comprobante de Donación'
-        };
 
         const tipoDteNombre = TIPOS_DTE_NOMBRES[documentoBase.identificacion?.tipoDte] || 'Factura';
         const destinoCorreo = documentoBase.receptor?.correo || emisorDb.correo;
@@ -536,8 +570,273 @@ router.post('/factura-sujeto-excluido', authMiddleware, enviarDTEController);
 router.post('/comprobante-donacion', authMiddleware, enviarDTEController);
 
 // Rutas de eventos e historial de DTEs
-router.post('/evento-invalidacion', authMiddleware, (req, res) => res.json({ success: false, error: 'Not implemented real events yet' }));
-router.post('/evento-contingencia', authMiddleware, (req, res) => res.json({ success: false, error: 'Not implemented real events yet' }));
+// =========================================================================
+// EVENTOS DE INVALIDACIÓN Y CONTINGENCIA
+// =========================================================================
+const crearEvento = async (emisorDb: any, tipo: string, evento: any, dteId: number | null) => {
+  const prisma = (await import('../db/prisma')).default;
+  return prisma.eventoDte.create({
+    data: {
+      emisor_id: emisorDb.id,
+      dte_id: dteId,
+      tipo,
+      ambiente: emisorDb.ambiente || '00',
+      codigo_generacion: evento.identificacion.codigoGeneracion,
+      json_enviado: evento
+    }
+  });
+};
+
+// Un error de firma o autenticación implica que el evento no salió; sin respuesta de MH se desconoce.
+const transmitirEvento = async (ruta: 'anulardte' | 'contingencia', evento: any, emisorDb: any, datosEnvio: any) => {
+  try {
+    const { documentoFirmado, ...respuesta } = await enviarEventoMh(ruta, evento, emisorDb, datosEnvio);
+    return { respuesta, documentoFirmado };
+  } catch (error: any) {
+    const estado = error instanceof EnvioIndeterminadoError ? 'PENDIENTE_MH' : 'NO_ENVIADO';
+    return { respuesta: { estado, descripcionMsg: error.message, observaciones: [] }, documentoFirmado: null };
+  }
+};
+
+const motivoHacienda = (r: any) => {
+  const obs = r.observaciones?.length ? ': ' + r.observaciones.join('; ') : '';
+  return `${r.descripcionMsg || r.mensaje || 'Rechazado por Hacienda'}${obs}`;
+};
+
+router.post('/evento-invalidacion', authMiddleware, async (req: any, res: any) => {
+  try {
+    const emisorDb = req.emisor;
+    const prisma = (await import('../db/prisma')).default;
+    const codigo = String(req.body.codigoGeneracion || '');
+    if (!UUID_REGEX.test(codigo)) {
+      return res.status(400).json({ success: false, error: 'Código de generación inválido.' });
+    }
+
+    const dte = await prisma.dteEmitido.findFirst({ where: { codigo_generacion: codigo, emisor_id: emisorDb.id } });
+    if (!dte) return res.status(404).json({ success: false, error: 'Documento no encontrado.' });
+    if (dte.estado !== 'PROCESADO' || !dte.sello_recepcion_mh) {
+      return res.status(409).json({ success: false, error: `Solo se puede invalidar un documento procesado. Estado actual: ${dte.estado}.` });
+    }
+
+    const reemplazo = req.body.codigoGeneracionR;
+    if (reemplazo) {
+      if (!UUID_REGEX.test(String(reemplazo)) || String(reemplazo).toLowerCase() === codigo.toLowerCase()) {
+        return res.status(400).json({ success: false, error: 'El documento de reemplazo no es válido.' });
+      }
+      const nuevo = await prisma.dteEmitido.findFirst({ where: { codigo_generacion: reemplazo, emisor_id: emisorDb.id } });
+      if (!nuevo || nuevo.estado !== 'PROCESADO') {
+        return res.status(422).json({ success: false, error: 'El documento de reemplazo debe estar emitido y procesado por Hacienda.' });
+      }
+    }
+
+    const evento = construirEventoInvalidacion(dte, req.body, emisorDb);
+    const registro = await crearEvento(emisorDb, 'INVALIDACION', evento, dte.id);
+    const { respuesta, documentoFirmado } = await transmitirEvento('anulardte', evento, emisorDb, {
+      ambiente: emisorDb.ambiente || '00',
+      idEnvio: Math.floor(Date.now() / 1000),
+      version: evento.identificacion.version
+    });
+
+    const aceptado = respuesta.estado === 'PROCESADO';
+    await prisma.$transaction([
+      prisma.eventoDte.update({
+        where: { id: registro.id },
+        data: {
+          estado: respuesta.estado || 'RECHAZADO',
+          sello_recepcion_mh: respuesta.selloRecibido || null,
+          json_enviado: { ...evento, firmaElectronica: documentoFirmado },
+          respuesta_mh: respuesta
+        }
+      }),
+      ...(aceptado ? [prisma.dteEmitido.update({ where: { id: dte.id }, data: { estado: 'INVALIDADO' } })] : [])
+    ]);
+
+    if (!aceptado) {
+      return res.json({ success: false, estado: respuesta.estado, error: motivoHacienda(respuesta), resultado: respuesta });
+    }
+    res.json({ success: true, codigoGeneracion: evento.identificacion.codigoGeneracion, selloRecibido: respuesta.selloRecibido, resultado: respuesta });
+  } catch (error: any) {
+    if (error instanceof DteInvalidoError) {
+      return res.status(422).json({ success: false, error: error.message, detalles: error.detalles });
+    }
+    console.error('Error en invalidación:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Documentos transitorios y eventos de contingencia del emisor.
+router.get('/contingencia/estado', authMiddleware, async (req: any, res: any) => {
+  try {
+    const emisorDb = req.emisor;
+    const prisma = (await import('../db/prisma')).default;
+    const ambiente = emisorDb.ambiente || '00';
+    const documentos = await prisma.dteEmitido.findMany({
+      where: { emisor_id: emisorDb.id, ambiente, estado: { in: [ESTADO_CONTINGENCIA, ESTADO_INFORMADO] } },
+      orderBy: { id: 'asc' },
+      select: { codigo_generacion: true, tipo_dte: true, numero_control: true, estado: true, fecha_emision: true, hora_emision: true, total_pagar: true }
+    });
+    const eventos = await prisma.eventoDte.findMany({
+      where: { emisor_id: emisorDb.id, ambiente, tipo: 'CONTINGENCIA' },
+      orderBy: { id: 'desc' },
+      take: 10,
+      select: { codigo_generacion: true, estado: true, sello_recepcion_mh: true, created_at: true, respuesta_mh: true }
+    });
+    res.json({ success: true, documentos, eventos });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Momento 2: informa a MH los documentos transitorios generados dentro del periodo.
+router.post('/evento-contingencia', authMiddleware, async (req: any, res: any) => {
+  try {
+    const emisorDb = req.emisor;
+    const prisma = (await import('../db/prisma')).default;
+    const c = req.body;
+    if (!c.fInicio || !c.hInicio || !c.fFin || !c.hFin) {
+      throw new DteInvalidoError('Indique la fecha y hora de inicio y de fin de la contingencia.');
+    }
+    const inicio = `${c.fInicio} ${c.hInicio}`;
+    const fin = `${c.fFin} ${c.hFin}`;
+    if (inicio > fin) throw new DteInvalidoError('El inicio de la contingencia no puede ser posterior a su fin.');
+
+    const transitorios = await prisma.dteEmitido.findMany({
+      where: { emisor_id: emisorDb.id, ambiente: emisorDb.ambiente || '00', estado: ESTADO_CONTINGENCIA },
+      orderBy: { id: 'asc' },
+      take: 1000
+    });
+    // MH compara el periodo y el tipo de contingencia del evento con los de cada documento.
+    const documentos = transitorios.filter((d: any) => {
+      const id = d.json_enviado?.identificacion || {};
+      const momento = `${id.fecEmi} ${id.horEmi}`;
+      return momento >= inicio && momento <= fin && id.tipoContingencia === Number(c.tipoContingencia);
+    });
+    if (documentos.length === 0) {
+      throw new DteInvalidoError('No hay documentos en contingencia de ese tipo dentro del periodo indicado.');
+    }
+
+    const evento = construirEventoContingencia(documentos, c, emisorDb);
+    const registro = await crearEvento(emisorDb, 'CONTINGENCIA', evento, null);
+    const { respuesta, documentoFirmado } = await transmitirEvento('contingencia', evento, emisorDb, {
+      nit: emisorDb.nit.replace(/-/g, '')
+    });
+
+    const aceptado = respuesta.estado === 'RECIBIDO' && !!respuesta.selloRecibido;
+    await prisma.$transaction([
+      prisma.eventoDte.update({
+        where: { id: registro.id },
+        data: {
+          estado: respuesta.estado || 'RECHAZADO',
+          sello_recepcion_mh: respuesta.selloRecibido || null,
+          json_enviado: { ...evento, firmaElectronica: documentoFirmado },
+          respuesta_mh: respuesta
+        }
+      }),
+      ...(aceptado ? [prisma.dteEmitido.updateMany({
+        where: { id: { in: documentos.map((d: any) => d.id) } },
+        data: { estado: ESTADO_INFORMADO }
+      })] : [])
+    ]);
+
+    if (!aceptado) {
+      return res.json({ success: false, estado: respuesta.estado, error: motivoHacienda(respuesta), resultado: respuesta });
+    }
+    res.json({
+      success: true,
+      codigoGeneracion: evento.identificacion.codigoGeneracion,
+      selloRecibido: respuesta.selloRecibido,
+      documentosInformados: documentos.length,
+      omitidos: transitorios.length - documentos.length,
+      resultado: respuesta
+    });
+  } catch (error: any) {
+    if (error instanceof DteInvalidoError) {
+      return res.status(422).json({ success: false, error: error.message, detalles: error.detalles });
+    }
+    console.error('Error en evento de contingencia:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Momento 3: transmite uno a uno los documentos informados, sin cambiar sus datos de origen.
+router.post('/contingencia/transmitir', authMiddleware, async (req: any, res: any) => {
+  try {
+    const emisorDb = req.emisor;
+    const prisma = (await import('../db/prisma')).default;
+    const VERSIONES: Record<string, number> = { '01': 2, '03': 4, '04': 4, '05': 4, '06': 4, '07': 2, '11': 3, '14': 2 };
+    const POR_LLAMADA = 20;
+
+    const informados = await prisma.dteEmitido.findMany({
+      where: { emisor_id: emisorDb.id, ambiente: emisorDb.ambiente || '00', estado: ESTADO_INFORMADO },
+      orderBy: { id: 'asc' },
+      take: POR_LLAMADA
+    });
+
+    const resultados: any[] = [];
+    for (const dte of informados) {
+      const { firmaElectronica, selloRecibido, ...original } = dte.json_enviado as any;
+      let resultado: any;
+      let firma: string | null = firmaElectronica || null;
+      try {
+        const { documentoFirmado, ...respuesta } = await enviarAlMH(original, dte.tipo_dte, VERSIONES[dte.tipo_dte], emisorDb);
+        firma = documentoFirmado;
+        resultado = respuesta;
+      } catch (error: any) {
+        // Sin respuesta de MH sigue informado y se reintenta en la siguiente llamada.
+        resultados.push({ codigoGeneracion: dte.codigo_generacion, numeroControl: dte.numero_control, estado: ESTADO_INFORMADO, mensaje: error.message });
+        continue;
+      }
+
+      const procesado = resultado.estado === 'PROCESADO';
+      await prisma.dteEmitido.update({
+        where: { id: dte.id },
+        data: {
+          estado: resultado.estado || 'RECHAZADO',
+          sello_recepcion_mh: resultado.selloRecibido || null,
+          descripcion_rechazo: procesado ? null : motivoHacienda(resultado),
+          json_enviado: { ...original, firmaElectronica: firma },
+          respuesta_mh: resultado
+        }
+      });
+      resultados.push({
+        codigoGeneracion: dte.codigo_generacion,
+        numeroControl: dte.numero_control,
+        estado: resultado.estado,
+        selloRecibido: resultado.selloRecibido || null,
+        mensaje: procesado ? null : motivoHacienda(resultado)
+      });
+
+      if (procesado) {
+        const dteCompleto = generarJsonDteCompleto(original, firma, resultado.selloRecibido);
+        setImmediate(async () => {
+          try {
+            await enviarCorreoDte({
+              destinoCorreo: original.receptor?.correo || emisorDb.correo,
+              nombreReceptor: original.receptor?.nombre || 'Cliente',
+              nombreEmisor: emisorDb.razon_social || 'Emisor',
+              tipoDteNombre: TIPOS_DTE_NOMBRES[dte.tipo_dte] || 'Documento',
+              numeroControl: dte.numero_control,
+              codigoGeneracion: String(dte.codigo_generacion).toUpperCase(),
+              montoTotal: Number(dte.total_pagar).toFixed(2),
+              pdfBuffer: await generarPdfDte({ ...dteCompleto, emisor: { ...dteCompleto.emisor, logoUrl: emisorDb.logo_url } }),
+              jsonCompleto: dteCompleto
+            });
+          } catch (bgErr: any) {
+            console.error('⚠️ Error al enviar correo de documento en contingencia:', bgErr.message || bgErr);
+          }
+        });
+      }
+    }
+
+    const pendientes = await prisma.dteEmitido.count({
+      where: { emisor_id: emisorDb.id, ambiente: emisorDb.ambiente || '00', estado: ESTADO_INFORMADO }
+    });
+    res.json({ success: true, resultados, pendientes });
+  } catch (error: any) {
+    console.error('Error al transmitir documentos en contingencia:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // =========================================================================
 // RUTAS PÚBLICAS PARA DESCARGA DIRECTA DE ARCHIVOS (Para WhatsApp API y Clientes)
@@ -968,6 +1267,19 @@ router.post('/consulta-dte', authMiddleware, async (req: any, res: any) => {
     const emisorDb = req.emisor;
     const prisma = (await import('../db/prisma')).default;
     
+    // Con código de generación se consulta el estado en Hacienda; sin él, el listado reciente.
+    const { tipoDte, codigoGeneracion } = req.body || {};
+    if (codigoGeneracion) {
+      if (!UUID_REGEX.test(String(codigoGeneracion))) {
+        return res.status(400).json({ success: false, error: 'Código de generación inválido.' });
+      }
+      const resultado = await consultarDteMh(String(codigoGeneracion), String(tipoDte || '01'), emisorDb);
+      if (!resultado) {
+        return res.json({ success: false, error: 'Hacienda no tiene registro de ese documento o no respondió.' });
+      }
+      return res.json({ success: true, resultado });
+    }
+
     const dtes = await prisma.dteEmitido.findMany({
       where: { emisor_id: emisorDb.id },
       orderBy: { id: 'desc' },

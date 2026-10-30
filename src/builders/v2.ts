@@ -74,6 +74,20 @@ export function receptorConDocumento(receptor: any, opciones: { direccionRequeri
   };
 }
 
+// Manual Funcional VIII: el documento en contingencia usa modelo diferido y transmisión por contingencia.
+function datosContingencia(contingencia: any) {
+  if (!contingencia) return { tipoModelo: 1, tipoOperacion: 1, tipoContingencia: null, motivoContin: null };
+  const tipoContingencia = Number(contingencia.tipoContingencia);
+  const motivoContin = textoONull(contingencia.motivoContin);
+  if (![1, 2, 3, 4, 5].includes(tipoContingencia)) {
+    throw new DteInvalidoError('Seleccione el tipo de contingencia.');
+  }
+  if (tipoContingencia === 5 && !motivoContin) {
+    throw new DteInvalidoError('Describa el motivo de la contingencia.');
+  }
+  return { tipoModelo: 2, tipoOperacion: 2, tipoContingencia, motivoContin };
+}
+
 export function identificacionV2(req: any, tipoDte: string, version: number, emisorDb: any) {
   const ahora = new Date();
   const codigo = req.body.identificacion?.codigoGeneracion;
@@ -83,10 +97,7 @@ export function identificacionV2(req: any, tipoDte: string, version: number, emi
     tipoDte,
     numeroControl: `DTE-${tipoDte}-M001P001-000000000000000`, // Se reemplaza al reservar el correlativo
     codigoGeneracion: codigo ? String(codigo).toUpperCase() : uuidv4().toUpperCase(),
-    tipoModelo: 1,
-    tipoOperacion: 1,
-    tipoContingencia: null,
-    motivoContin: null,
+    ...datosContingencia(req.body.contingencia),
     fecEmi: ahora.toLocaleDateString('en-CA', { timeZone: 'America/El_Salvador' }),
     horEmi: ahora.toLocaleTimeString('en-GB', { timeZone: 'America/El_Salvador', hour12: false }),
     tipoMoneda: 'USD'
