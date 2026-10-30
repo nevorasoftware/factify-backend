@@ -34,7 +34,7 @@ export async function construirDte03(req: any, versionDte: number, emisorDb: any
       codActividad: textoONull(receptor?.codActividad),
       descActividad: textoONull(receptor?.descActividad),
       nombreComercial: textoONull(receptor?.nombreComercial),
-      direccion: direccionObligatoria(receptor?.direccion, 'el receptor'),
+      direccion: direccionObligatoria(receptor?.direccion, 'del receptor'),
       telefono: textoONull(receptor?.telefono),
       correo: textoONull(receptor?.correo)
     },

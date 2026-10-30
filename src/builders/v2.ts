@@ -18,7 +18,7 @@ const textoONull = (v: any): string | null => {
 
 export function direccionObligatoria(dir: any, quien: string) {
   if (!dir?.departamento || !dir?.municipio || !dir?.distrito || !textoONull(dir?.complemento)) {
-    throw new DteInvalidoError(`La dirección de ${quien} debe tener departamento, municipio, distrito y complemento vigentes.`);
+    throw new DteInvalidoError(`La dirección ${quien} debe tener departamento, municipio, distrito y complemento vigentes.`);
   }
   return {
     departamento: String(dir.departamento),
@@ -36,7 +36,7 @@ export function emisorV2(emisorDb: any) {
     codActividad: emisorDb.cod_actividad,
     descActividad: emisorDb.desc_actividad,
     nombreComercial: emisorDb.nombre_comercial || null,
-    direccion: direccionObligatoria(emisorDb.direccion, 'el emisor'),
+    direccion: direccionObligatoria(emisorDb.direccion, 'del emisor'),
     telefono: emisorDb.telefono,
     correo: emisorDb.correo,
     codEstable: formatearCodEstableMH(emisorDb.cod_establecimiento_mh),

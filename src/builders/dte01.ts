@@ -33,7 +33,7 @@ function receptorFactura(receptor: any) {
     nombre,
     codActividad: textoONull(receptor?.codActividad),
     descActividad: textoONull(receptor?.descActividad),
-    direccion: dir?.distrito ? direccionObligatoria(dir, 'el receptor') : null,
+    direccion: dir?.distrito ? direccionObligatoria(dir, 'del receptor') : null,
     telefono: textoONull(receptor?.telefono),
     correo: textoONull(receptor?.correo)
   };
