@@ -132,8 +132,9 @@ function ventasContribuyentes(ventas: VentaContable[], config: Configuracion): L
     const d = desgloseDte(v.json);
     const receptor = v.json?.receptor || {};
     const id = identificacion(receptor.nit ?? receptor.numDocumento);
-    const exentas = num(resumenDe(v.json).totalExenta);
-    const noSujetas = num(resumenDe(v.json).totalNoSuj);
+    const r = resumenDe(v.json);
+    const exentas = num(r.totalExenta) - num(r.descuExenta);
+    const noSujetas = num(r.totalNoSuj) - num(r.descuNoSux);
     const total = d.gravada + exentas + noSujetas + d.iva;
     // El archivo no admite negativos: la nota de crédito va en positivo y se resta solo en los totales
     const signo = v.tipo === '05' ? -1 : 1;
@@ -193,9 +194,9 @@ function ventasConsumidor(ventas: VentaContable[], config: Configuracion): Libro
         else if (PAISES_CENTROAMERICA.includes(String(v.json?.receptor?.codPais))) suma.expCa += valor;
         else suma.expFuera += valor;
       } else {
-        suma.exenta += num(r.totalExenta);
-        suma.noSujeta += num(r.totalNoSuj);
-        suma.gravada += num(r.totalGravada); // En factura el manual la pide con IVA incluido
+        suma.exenta += num(r.totalExenta) - num(r.descuExenta);
+        suma.noSujeta += num(r.totalNoSuj) - num(r.descuNoSux);
+        suma.gravada += num(r.totalGravada) - num(r.descuGravada); // En factura el manual la pide con IVA incluido
         suma.iva += num(r.totalIva);
       }
     }
@@ -699,6 +700,17 @@ async function completarDesgloses(emisorId: number): Promise<void> {
   });
   for (const compra of pendientes) {
     const leido = leerDte(Buffer.from(compra.archivos[0].contenido));
+    if (leido) await prisma.compra.update({ where: { id: compra.id }, data: desgloseDte(leido.dte) });
+  }
+
+  // Corrige las calculadas antes de restar el descuento global; una compra editada a mano no se toca.
+  const calculadas = await prisma.compra.findMany({
+    where: { emisor_id: emisorId, gravada: { not: null }, tipo_operacion: null, archivos: { some: { tipo: 'JSON' } } },
+    select: { id: true, gravada: true, iva: true }
+  });
+  for (const compra of calculadas.filter(c => Math.abs(Number(c.iva) - Number(c.gravada) * 0.13) > 0.05)) {
+    const archivo = await prisma.compraArchivo.findFirst({ where: { compra_id: compra.id, tipo: 'JSON' }, select: { contenido: true } });
+    const leido = archivo && leerDte(Buffer.from(archivo.contenido));
     if (leido) await prisma.compra.update({ where: { id: compra.id }, data: desgloseDte(leido.dte) });
   }
 }

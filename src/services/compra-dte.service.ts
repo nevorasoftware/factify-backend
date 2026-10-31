@@ -127,9 +127,10 @@ export function desgloseDte(dte: any): Desglose {
     };
   }
   const tributoIva = Array.isArray(r.tributos) ? r.tributos.find((t: any) => t?.codigo === '20') : null;
+  // El IVA se calcula después del descuento global: lo declarable es el monto neto
   return {
-    gravada: redondear(numero(r.totalGravada)),
-    exenta: redondear(numero(r.totalExenta) + numero(r.totalNoSuj)),
+    gravada: redondear(numero(r.totalGravada) - numero(r.descuGravada)),
+    exenta: redondear(numero(r.totalExenta) - numero(r.descuExenta) + numero(r.totalNoSuj) - numero(r.descuNoSux)),
     iva: redondear(numero(tributoIva?.valor ?? r.totalIva)),
     iva_percibido: redondear(numero(r.ivaPerci1)),
     iva_retenido: redondear(numero(r.ivaRete1))

@@ -265,6 +265,12 @@ const enviarDTEController = async (req: any, res: any) => {
     else if (req.path === '/factura-sujeto-excluido') { tipoDte = '14'; versionDte = 2; }
     else if (req.path === '/comprobante-donacion') { tipoDte = '15'; versionDte = 2; }
 
+    // Pantalla "Pruebas Hacienda": cientos de documentos seguidos, sin correo y nunca en producción
+    const soloPruebas = req.body.soloPruebas === true;
+    if (soloPruebas && req.emisor.ambiente !== '00') {
+      return res.status(403).json({ success: false, error: 'Las pruebas solo pueden enviarse en el ambiente 00.' });
+    }
+
     const enContingencia = !!req.body.contingencia;
     if (enContingencia && !TIPOS_EN_CONTINGENCIA.includes(tipoDte)) {
       return res.status(422).json({ success: false, error: 'Este tipo de documento no se puede emitir en contingencia.' });
@@ -499,6 +505,8 @@ const enviarDTEController = async (req: any, res: any) => {
       pdfUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/pdf`,
       jsonUrl: `/api/dtes/${documentoBase.identificacion.codigoGeneracion}/json`
     });
+
+    if (soloPruebas) return;
 
     // Proceso independiente e asíncrono en segundo plano (No bloquea la respuesta HTTP)
     setImmediate(async () => {
@@ -810,7 +818,7 @@ router.post('/contingencia/transmitir', authMiddleware, async (req: any, res: an
         mensaje: procesado ? null : motivoHacienda(resultado)
       });
 
-      if (procesado) {
+      if (procesado && !(req.body.soloPruebas === true && emisorDb.ambiente === '00')) {
         const dteCompleto = generarJsonDteCompleto(original, firma, resultado.selloRecibido);
         setImmediate(async () => {
           try {
