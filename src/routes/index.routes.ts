@@ -271,6 +271,12 @@ const enviarDTEController = async (req: any, res: any) => {
       return res.status(403).json({ success: false, error: 'Las pruebas solo pueden enviarse en el ambiente 00.' });
     }
 
+    // En producción solo se emite lo que Hacienda autorizó al emisor
+    const autorizados = req.emisor.dtes_visibles;
+    if (req.emisor.ambiente === '01' && Array.isArray(autorizados) && !autorizados.includes(tipoDte)) {
+      return res.status(403).json({ success: false, error: 'Este tipo de documento no está autorizado para su empresa en producción.' });
+    }
+
     const enContingencia = !!req.body.contingencia;
     if (enContingencia && !TIPOS_EN_CONTINGENCIA.includes(tipoDte)) {
       return res.status(422).json({ success: false, error: 'Este tipo de documento no se puede emitir en contingencia.' });
@@ -624,7 +630,7 @@ router.post('/evento-invalidacion', authMiddleware, async (req: any, res: any) =
       return res.status(400).json({ success: false, error: 'Código de generación inválido.' });
     }
 
-    const dte = await prisma.dteEmitido.findFirst({ where: { codigo_generacion: codigo, emisor_id: emisorDb.id } });
+    const dte = await prisma.dteEmitido.findFirst({ where: { codigo_generacion: codigo, emisor_id: emisorDb.id, ambiente: emisorDb.ambiente || '00' } });
     if (!dte) return res.status(404).json({ success: false, error: 'Documento no encontrado.' });
     if (dte.estado !== 'PROCESADO' || !dte.sello_recepcion_mh) {
       return res.status(409).json({ success: false, error: `Solo se puede invalidar un documento procesado. Estado actual: ${dte.estado}.` });
@@ -1302,7 +1308,7 @@ router.post('/consulta-dte', authMiddleware, async (req: any, res: any) => {
     }
 
     const dtes = await prisma.dteEmitido.findMany({
-      where: { emisor_id: emisorDb.id },
+      where: { emisor_id: emisorDb.id, ambiente: emisorDb.ambiente || '00' },
       orderBy: { id: 'desc' },
       take: 100 // Retornar últimos 100
     });
@@ -1318,15 +1324,17 @@ router.get('/dashboard/stats', authMiddleware, async (req: any, res: any) => {
   try {
     const emisorDb = req.emisor;
     const prisma = (await import('../db/prisma')).default;
+    // Los documentos de pruebas nunca se suman a los de producción
+    const delAmbiente = { emisor_id: emisorDb.id, ambiente: emisorDb.ambiente || '00' };
 
     // Contar total de documentos del emisor
     const totalDocumentos = await prisma.dteEmitido.count({
-      where: { emisor_id: emisorDb.id }
+      where: delAmbiente
     });
 
     // Sumar montos totales del emisor
     const aggregateMonto = await prisma.dteEmitido.aggregate({
-      where: { emisor_id: emisorDb.id, estado: 'PROCESADO' },
+      where: { ...delAmbiente, estado: 'PROCESADO' },
       _sum: {
         total_pagar: true
       }
@@ -1336,7 +1344,7 @@ router.get('/dashboard/stats', authMiddleware, async (req: any, res: any) => {
     // Agrupar por estado para obtener contadores específicos del emisor
     const countsByEstado = await prisma.dteEmitido.groupBy({
       by: ['estado'],
-      where: { emisor_id: emisorDb.id },
+      where: delAmbiente,
       _count: {
         _all: true
       }
@@ -1366,7 +1374,7 @@ router.get('/dashboard/stats', authMiddleware, async (req: any, res: any) => {
 
     // Obtener los 5 documentos más recientes con información resumida del cliente
     const dtesRecientes = await prisma.dteEmitido.findMany({
-      where: { emisor_id: emisorDb.id },
+      where: delAmbiente,
       orderBy: { id: 'desc' },
       take: 5,
       include: {
@@ -1382,7 +1390,7 @@ router.get('/dashboard/stats', authMiddleware, async (req: any, res: any) => {
     // Agrupar por tipo_dte para obtener el conteo por tipo de documento
     const countsByTipoDte = await prisma.dteEmitido.groupBy({
       by: ['tipo_dte'],
-      where: { emisor_id: emisorDb.id },
+      where: delAmbiente,
       _count: {
         _all: true
       }
@@ -1659,8 +1667,8 @@ router.get('/compras', authMiddleware, async (req: any, res: any) => {
       where: {
         emisor_id: emisorDb.id,
         tipo_documento: { not: TIPO_RETENCION_RECIBIDA },
-        // En producción no se mezclan documentos de pruebas leídos antes del cambio de ambiente
-        ...(emisorDb.ambiente === '01' ? { NOT: { ambiente: '00' } } : {})
+        // En producción no se mezclan documentos de pruebas; las registradas a mano no tienen ambiente
+        ...(emisorDb.ambiente === '01' ? { OR: [{ ambiente: null }, { ambiente: { not: '00' } }] } : {})
       },
       include: {
         items: true,

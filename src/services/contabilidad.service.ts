@@ -736,8 +736,11 @@ export async function reporteDelPeriodo(emisor: any, periodo: string) {
     prisma.compra.findMany({
       where: {
         emisor_id: emisor.id,
-        ...(ambiente === '01' ? { NOT: { ambiente: '00' } } : {}),
-        OR: [{ periodo_iva: periodo }, { periodo_iva: null, fecha_compra: { gte: inicio, lt: fin } }]
+        AND: [
+          // Las compras registradas a mano no tienen ambiente
+          ...(ambiente === '01' ? [{ OR: [{ ambiente: null }, { ambiente: { not: '00' } }] }] : []),
+          { OR: [{ periodo_iva: periodo }, { periodo_iva: null, fecha_compra: { gte: inicio, lt: fin } }] }
+        ]
       },
       orderBy: [{ fecha_compra: 'asc' }, { id: 'asc' }]
     }),
