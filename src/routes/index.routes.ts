@@ -14,6 +14,8 @@ import fs from 'fs';
 import path from 'path';
 import { enviarCorreoDte, enviarCorreoConMotivo } from '../services/email.service';
 import { enviarWhatsappDteApi } from '../services/whatsapp.service';
+import { cifradoDisponible, cifrar } from '../utils/cifrado';
+import { ConexionCorreoError, ejecutarImportacion, importacionVencida, probarConexion, servidorSugerido } from '../services/correo-compras.service';
 
 const router = Router();
 
@@ -1644,13 +1646,151 @@ router.get('/compras', authMiddleware, async (req: any, res: any) => {
     const emisorDb = req.emisor;
     const prisma = (await import('../db/prisma')).default;
     const compras = await prisma.compra.findMany({
-      where: { emisor_id: emisorDb.id },
-      include: {
-        items: true
+      where: {
+        emisor_id: emisorDb.id,
+        // En producción no se mezclan documentos de pruebas leídos antes del cambio de ambiente
+        ...(emisorDb.ambiente === '01' ? { NOT: { ambiente: '00' } } : {})
       },
-      orderBy: { id: 'desc' }
+      include: {
+        items: true,
+        archivos: { select: { tipo: true } }
+      },
+      orderBy: [{ fecha_compra: 'desc' }, { id: 'desc' }]
     });
     res.json({ success: true, compras });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// =========================================================================
+// LECTURA DE COMPRAS DESDE EL CORREO DEL EMISOR (Tenant-Safe)
+// =========================================================================
+const datosImportacion = (i: any) => i && ({
+  id: i.id,
+  periodo: i.periodo,
+  estado: importacionVencida(i) ? 'ERROR' : i.estado,
+  total: i.total,
+  revisados: i.revisados,
+  importadas: i.importadas,
+  duplicadas: i.duplicadas,
+  ignoradas: i.ignoradas,
+  porRevisar: i.por_revisar,
+  detalle: i.detalle || [],
+  error: importacionVencida(i) ? 'La lectura se interrumpió. Puede volver a iniciarla sin riesgo de duplicar compras.' : i.error,
+  fecha: i.created_at
+});
+
+router.get('/compras/correo/conexion', authMiddleware, async (req: any, res: any) => {
+  try {
+    const emisorDb = req.emisor;
+    const prisma = (await import('../db/prisma')).default;
+    const conexion = await prisma.conexionCorreo.findUnique({ where: { emisor_id: emisorDb.id } });
+    const ultima = await prisma.importacionCorreo.findFirst({ where: { emisor_id: emisorDb.id }, orderBy: { id: 'desc' } });
+    const vigente = !!conexion && conexion.usuario.toLowerCase() === String(emisorDb.correo).toLowerCase();
+    res.json({
+      success: true,
+      disponible: cifradoDisponible(),
+      correo: emisorDb.correo,
+      conectado: vigente,
+      host: vigente ? conexion!.host : servidorSugerido(emisorDb.correo || ''),
+      ultima: datosImportacion(ultima)
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.put('/compras/correo/conexion', authMiddleware, async (req: any, res: any) => {
+  try {
+    const emisorDb = req.emisor;
+    if (!cifradoDisponible()) {
+      return res.status(503).json({ success: false, error: 'La lectura de correo aún no está habilitada en el servidor.' });
+    }
+    const host = String(req.body.host || '').trim().toLowerCase();
+    // Las contraseñas de aplicación de Google se muestran con espacios que no forman parte de ellas
+    const password = String(req.body.password || '').replace(/\s+/g, '');
+    if (!emisorDb.correo || !host || !password) {
+      return res.status(400).json({ success: false, error: 'El servidor de correo y la contraseña de aplicación son obligatorios.' });
+    }
+
+    await probarConexion(host, emisorDb.correo, password);
+
+    const prisma = (await import('../db/prisma')).default;
+    const datos = { host, usuario: emisorDb.correo, password_cifrada: cifrar(password) };
+    await prisma.conexionCorreo.upsert({ where: { emisor_id: emisorDb.id }, create: { emisor_id: emisorDb.id, ...datos }, update: datos });
+    res.json({ success: true, correo: emisorDb.correo, host });
+  } catch (error: any) {
+    if (error instanceof ConexionCorreoError) return res.status(422).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete('/compras/correo/conexion', authMiddleware, async (req: any, res: any) => {
+  try {
+    const prisma = (await import('../db/prisma')).default;
+    await prisma.conexionCorreo.deleteMany({ where: { emisor_id: req.emisor.id } });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/compras/correo/importar', authMiddleware, async (req: any, res: any) => {
+  try {
+    const emisorDb = req.emisor;
+    const periodo = req.body.periodo;
+    if (!['TODO', 'MES', 'DIA'].includes(periodo)) {
+      return res.status(400).json({ success: false, error: 'Indique si desea leer toda la bandeja, el mes o el día.' });
+    }
+
+    const prisma = (await import('../db/prisma')).default;
+    const conexion = await prisma.conexionCorreo.findUnique({ where: { emisor_id: emisorDb.id } });
+    if (!cifradoDisponible() || !conexion || conexion.usuario.toLowerCase() !== String(emisorDb.correo).toLowerCase()) {
+      return res.status(409).json({ success: false, error: 'Conecte primero el correo del emisor.' });
+    }
+
+    const enCurso = await prisma.importacionCorreo.findFirst({ where: { emisor_id: emisorDb.id, estado: 'EN_PROCESO' }, orderBy: { id: 'desc' } });
+    if (enCurso && !importacionVencida(enCurso)) {
+      return res.status(409).json({ success: false, error: 'Ya hay una lectura en curso.', importacion: datosImportacion(enCurso) });
+    }
+    if (enCurso) {
+      await prisma.importacionCorreo.update({ where: { id: enCurso.id }, data: { estado: 'ERROR', error: 'La lectura se interrumpió.' } });
+    }
+
+    const importacion = await prisma.importacionCorreo.create({ data: { emisor_id: emisorDb.id, periodo } });
+    // Una bandeja completa puede tardar varios minutos: la pantalla consulta el avance
+    ejecutarImportacion(importacion.id, emisorDb, periodo).catch(e => console.error('Error en la lectura de correo:', e?.message));
+    res.status(202).json({ success: true, importacion: datosImportacion(importacion) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/compras/correo/importar/:id', authMiddleware, async (req: any, res: any) => {
+  try {
+    const prisma = (await import('../db/prisma')).default;
+    const importacion = await prisma.importacionCorreo.findFirst({ where: { id: Number(req.params.id) || 0, emisor_id: req.emisor.id } });
+    if (!importacion) return res.status(404).json({ success: false, error: 'Lectura no encontrada.' });
+    res.json({ success: true, importacion: datosImportacion(importacion) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/compras/:id/archivos/:tipo', authMiddleware, async (req: any, res: any) => {
+  try {
+    const tipo = String(req.params.tipo).toUpperCase();
+    const prisma = (await import('../db/prisma')).default;
+    const archivo = await prisma.compraArchivo.findFirst({
+      where: { tipo, compra_id: Number(req.params.id) || 0, compra: { emisor_id: req.emisor.id } }
+    });
+    if (!archivo) return res.status(404).json({ success: false, error: 'Archivo no encontrado.' });
+    // Lo envió un tercero: siempre como descarga, nunca para mostrarlo dentro de la aplicación
+    res.setHeader('Content-Type', tipo === 'PDF' ? 'application/pdf' : 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${archivo.nombre}"`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send(Buffer.from(archivo.contenido));
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

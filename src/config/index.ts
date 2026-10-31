@@ -26,6 +26,9 @@ export const config = {
     refreshToken: (process.env.GMAIL_REFRESH_TOKEN || '').trim(),
     emailFrom: (process.env.EMAIL_FROM || '"Nevora Software DTE" <softwarenevora@gmail.com>').trim()
   },
+  correoCompras: {
+    clave: (process.env.CORREO_CIFRADO_KEY || '').trim()
+  },
   whatsapp: {
     token: (process.env.WHATSAPP_TOKEN || '').trim(),
     phoneNumberId: (process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim()
