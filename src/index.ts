@@ -8,7 +8,8 @@ const port = process.env.PORT || 4001;
 // Middleware
 // CORS_ORIGINS: frontends autorizados, separados por comas. Sin definir queda abierto.
 const origenes = (process.env.CORS_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean);
-app.use(cors(origenes.length > 0 ? { origin: origenes } : undefined));
+// Expone el nombre oficial de los archivos descargados a los frontends de otros dominios
+app.use(cors({ ...(origenes.length > 0 ? { origin: origenes } : {}), exposedHeaders: ['Content-Disposition'] }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
