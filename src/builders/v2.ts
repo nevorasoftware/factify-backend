@@ -56,13 +56,18 @@ export function tipoDocumentoReceptor(numDocumento: string): string {
   return '37';
 }
 
+// MH solo acepta el NIT y el DUI sin guiones.
+export function numeroDocumentoMH(tipoDocumento: string | null, documento: string | null) {
+  return documento && (tipoDocumento === '36' || tipoDocumento === '13') ? documento.replace(/-/g, '') : documento;
+}
+
 export function receptorConDocumento(receptor: any, opciones: { direccionRequerida?: boolean } = {}) {
   const documento = textoONull(receptor?.numDocumento ?? receptor?.nit);
   const tipoDocumento = textoONull(receptor?.tipoDocumento) || (documento ? tipoDocumentoReceptor(documento) : null);
   const dir = receptor?.direccion;
   return {
     tipoDocumento,
-    numDocumento: documento && tipoDocumento === '36' ? documento.replace(/-/g, '') : documento,
+    numDocumento: numeroDocumentoMH(tipoDocumento, documento),
     nrc: textoONull(receptor?.nrc)?.replace(/-/g, '') ?? null,
     nombre: textoONull(receptor?.nombre),
     codActividad: textoONull(receptor?.codActividad),

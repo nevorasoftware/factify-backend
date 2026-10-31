@@ -1,7 +1,7 @@
 import { montoEnLetras } from '../utils/letras';
 import {
   IVA, round2, direccionObligatoria, documentosRelacionadosV2, emisorV2, identificacionV2,
-  lineasBase, pagosV2, sumarLineas, textoONull, tipoDocumentoReceptor, validarYNumerar
+  lineasBase, numeroDocumentoMH, pagosV2, sumarLineas, textoONull, tipoDocumentoReceptor, validarYNumerar
 } from './v2';
 
 function receptorFactura(receptor: any) {
@@ -17,7 +17,7 @@ function receptorFactura(receptor: any) {
   }
 
   const tipo = textoONull(receptor?.tipoDocumento) || (documento ? tipoDocumentoReceptor(documento) : null);
-  const numDocumento = documento && tipo === '36' ? documento.replace(/-/g, '') : documento;
+  const numDocumento = numeroDocumentoMH(tipo, documento);
   const dir = receptor?.direccion;
 
   return {
