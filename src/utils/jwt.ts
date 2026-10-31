@@ -16,6 +16,7 @@ export interface TokenPayload {
   emisorId: number;
   correo: string;
   nit: string;
+  iat?: number;
 }
 
 export function firmarHmac(contenido: string, proposito: string): string {

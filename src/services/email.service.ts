@@ -179,6 +179,37 @@ function getTransporter() {
   return transporter;
 }
 
+// Correos de la cuenta (invitación y contraseña), sin adjuntos.
+export async function enviarCorreoCuenta(destino: string, asunto: string, html: string): Promise<boolean> {
+  try {
+    const { clientId, clientSecret, refreshToken, emailFrom } = config.email;
+    if (clientId && clientSecret && refreshToken) {
+      const tokenRes = await axios.post('https://oauth2.googleapis.com/token', {
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token'
+      }, { timeout: 15000 });
+      const armador = nodemailer.createTransport({ streamTransport: true, newline: 'windows', buffer: true });
+      const info = await armador.sendMail({ from: emailFrom, to: destino, subject: asunto, html });
+      await axios.post(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+        { raw: (info.message as Buffer).toString('base64url') },
+        { headers: { Authorization: `Bearer ${tokenRes.data.access_token}` }, timeout: 20000 }
+      );
+      return true;
+    }
+    const mailTransporter = getTransporter();
+    if (!mailTransporter) return false;
+    await mailTransporter.sendMail({ from: emailFrom, to: destino, subject: asunto, html });
+    return true;
+  } catch (error: any) {
+    console.error('❌ Error al enviar correo de la cuenta:', error.response?.data?.error || error.message);
+    transporter = null;
+    return false;
+  }
+}
+
 /**
  * Envia por correo electrónico la representación gráfica en PDF y el archivo JSON oficial del DTE.
  */

@@ -6,7 +6,7 @@ import { obtenerSiguienteCorrelativo } from '../builders/common';
 import { hashPassword, esHash, verificarPassword } from '../utils/password';
 import { crearTokenEnlace, leerTokenEnlace } from '../utils/enlace-publico';
 import { config } from '../config';
-import { verifyToken, generateToken } from '../utils/jwt';
+import { firmaValida, verifyToken, generateToken } from '../utils/jwt';
 import { generarJsonDteCompleto } from '../services/dte-json.service';
 import { generarPdfDte } from '../services/pdf.service';
 import { DteInvalidoError } from '../services/schema.service';
@@ -18,6 +18,10 @@ import { cifradoDisponible, cifrar } from '../utils/cifrado';
 import { ConexionCorreoError, ejecutarImportacion, importacionVencida, probarConexion, servidorSugerido } from '../services/correo-compras.service';
 import { TIPO_RETENCION_RECIBIDA } from '../services/compra-dte.service';
 import { actualizarDatosContables, archivoAnexo, ContabilidadError, guardarAjustes, guardarConfiguracion, obtenerConfiguracion, reporteDelPeriodo } from '../services/contabilidad.service';
+import { buscarPorCorreo, cambiarPassword, CuentaError, restablecerPassword, solicitarRecuperacion, validarToken } from '../services/cuenta.service';
+import { certificadosParaFirmador } from '../services/empresas.service';
+import { excedido, limpiarIntentos } from '../utils/limite';
+import adminRoutes from './admin.routes';
 
 const router = Router();
 
@@ -52,8 +56,13 @@ export const authMiddleware = async (req: any, res: any, next: any) => {
       where: { id: decoded.emisorId }
     });
 
-    if (!emisor) {
+    if (!emisor || !emisor.activo) {
       return res.status(401).json({ success: false, error: 'Perfil de emisor no encontrado' });
+    }
+
+    // Un cambio de contraseña cierra las sesiones abiertas antes de ese momento
+    if (emisor.sesiones_desde && (decoded.iat || 0) < Math.floor(emisor.sesiones_desde.getTime() / 1000)) {
+      return res.status(401).json({ success: false, error: 'La sesión ya no es válida. Ingrese de nuevo.' });
     }
 
     // Adjuntar el emisor autenticado a la petición
@@ -69,6 +78,64 @@ export const authMiddleware = async (req: any, res: any, next: any) => {
 // RUTAS DE AUTENTICACIÓN Y PERFIL
 // =========================================================================
 
+const MAX_INTENTOS_LOGIN = 10;
+const VENTANA_INTENTOS_MS = 15 * 60 * 1000;
+
+// Solicitar el enlace de recuperación. Responde igual exista o no la cuenta.
+router.post('/auth/recuperar', async (req: any, res: any) => {
+  const correo = typeof req.body?.correo === 'string' ? req.body.correo.trim() : '';
+  if (!correo.includes('@')) {
+    return res.status(400).json({ success: false, error: 'Indique un correo válido.' });
+  }
+  if (excedido(`recuperar:${req.ip}`, 10, 60 * 60 * 1000)) {
+    return res.status(429).json({ success: false, error: 'Demasiadas solicitudes. Intente más tarde.' });
+  }
+  // No se espera el envío: el tiempo de respuesta no debe revelar si la cuenta existe.
+  solicitarRecuperacion(correo, req.get('origin')).catch(error => console.error('Error al solicitar recuperación:', error.message));
+  res.json({ success: true, message: 'Si el correo está registrado, recibirás un enlace para crear una nueva contraseña.' });
+});
+
+router.post('/auth/restablecer/validar', async (req: any, res: any) => {
+  try {
+    if (excedido(`restablecer:${req.ip}`, 30, VENTANA_INTENTOS_MS)) {
+      return res.status(429).json({ success: false, error: 'Demasiados intentos. Intente más tarde.' });
+    }
+    const registro = await validarToken(String(req.body?.token || ''));
+    res.json({ success: true, valido: !!registro, tipo: registro?.tipo || null });
+  } catch (error: any) {
+    console.error('Error al validar enlace:', error.message);
+    res.status(500).json({ success: false, error: 'No se pudo validar el enlace.' });
+  }
+});
+
+router.post('/auth/restablecer', async (req: any, res: any) => {
+  try {
+    if (excedido(`restablecer:${req.ip}`, 30, VENTANA_INTENTOS_MS)) {
+      return res.status(429).json({ success: false, error: 'Demasiados intentos. Intente más tarde.' });
+    }
+    await restablecerPassword(String(req.body?.token || ''), req.body?.password);
+    res.json({ success: true, message: 'Contraseña actualizada. Ya puede ingresar.' });
+  } catch (error: any) {
+    if (error instanceof CuentaError) return res.status(422).json({ success: false, error: error.message });
+    console.error('Error al restablecer contraseña:', error.message);
+    res.status(500).json({ success: false, error: 'No se pudo actualizar la contraseña.' });
+  }
+});
+
+// Lo consulta el firmador para mantener los certificados de las empresas al día.
+router.get('/internal/certificados', async (req: any, res: any) => {
+  const esperado = process.env.FIRMADOR_SYNC_TOKEN || '';
+  if (esperado.length < 32 || !firmaValida(String(req.get('x-firmador-token') || ''), esperado)) {
+    return res.status(404).json({ success: false, error: 'No encontrado' });
+  }
+  try {
+    res.type('text/plain').send(await certificadosParaFirmador());
+  } catch (error: any) {
+    console.error('Error al entregar certificados:', error.message);
+    res.status(500).send('');
+  }
+});
+
 // Login de Emisor (Cliente SaaS)
 router.post('/auth/login', async (req: any, res: any) => {
   try {
@@ -77,19 +144,23 @@ router.post('/auth/login', async (req: any, res: any) => {
       return res.status(400).json({ success: false, error: 'Correo y contraseña son requeridos' });
     }
 
+    const claveIntentos = `login:${req.ip}:${String(correo).trim().toLowerCase()}`;
+    if (excedido(claveIntentos, MAX_INTENTOS_LOGIN, VENTANA_INTENTOS_MS)) {
+      return res.status(429).json({ success: false, error: 'Demasiados intentos. Espere 15 minutos o restablezca su contraseña.' });
+    }
+
     const prisma = (await import('../db/prisma')).default;
-    const emisor = await prisma.emisor.findFirst({
-      where: {
-        correo: {
-          equals: correo.trim(),
-          mode: 'insensitive'
-        }
-      }
-    });
+    const emisor = await buscarPorCorreo(correo);
 
     if (!emisor || !verificarPassword(password.trim(), emisor.password)) {
       return res.status(401).json({ success: false, error: 'Credenciales inválidas' });
     }
+
+    if (!emisor.activo) {
+      return res.status(403).json({ success: false, error: 'Esta cuenta está suspendida. Contacte a Nevora.' });
+    }
+
+    limpiarIntentos(claveIntentos);
 
     // Contraseña heredada en texto plano: se reemplaza por su hash en el primer login correcto
     if (!esHash(emisor.password || '')) {
@@ -117,7 +188,8 @@ router.post('/auth/login', async (req: any, res: any) => {
         correo: emisor.correo,
         logoUrl: emisor.logo_url,
         dtesVisibles: emisor.dtes_visibles || ["01", "03", "11"], // Default fallback
-        ambiente: emisor.ambiente || "00"
+        ambiente: emisor.ambiente || "00",
+        esAdmin: emisor.es_admin
       }
     });
   } catch (error: any) {
@@ -146,10 +218,37 @@ router.get('/auth/me', authMiddleware, async (req: any, res: any) => {
       dtesVisibles: emisor.dtes_visibles || ["01", "03", "11"],
       ambiente: emisor.ambiente || "00",
       codEstablecimientoMh: emisor.cod_establecimiento_mh || "0000",
-      codPuntoVentaMh: emisor.cod_punto_venta_mh || "0000"
+      codPuntoVentaMh: emisor.cod_punto_venta_mh || "0000",
+      esAdmin: emisor.es_admin
     }
   });
 });
+
+// Cambiar la contraseña con la sesión abierta. Cierra las demás sesiones y entrega un token nuevo.
+router.post('/auth/cambiar-password', authMiddleware, async (req: any, res: any) => {
+  try {
+    const emisor = req.emisor;
+    if (excedido(`cambiar:${emisor.id}`, MAX_INTENTOS_LOGIN, VENTANA_INTENTOS_MS)) {
+      return res.status(429).json({ success: false, error: 'Demasiados intentos. Espere 15 minutos.' });
+    }
+    if (!verificarPassword(String(req.body?.actual || '').trim(), emisor.password)) {
+      return res.status(422).json({ success: false, error: 'La contraseña actual no es correcta.' });
+    }
+    await cambiarPassword(emisor.id, req.body?.nueva);
+    limpiarIntentos(`cambiar:${emisor.id}`);
+    res.json({ success: true, token: generateToken({ emisorId: emisor.id, correo: emisor.correo || '', nit: emisor.nit }) });
+  } catch (error: any) {
+    if (error instanceof CuentaError) return res.status(422).json({ success: false, error: error.message });
+    console.error('Error al cambiar contraseña:', error.message);
+    res.status(500).json({ success: false, error: 'No se pudo cambiar la contraseña.' });
+  }
+});
+
+const soloAdmin = (req: any, res: any, next: any) => {
+  if (!req.emisor?.es_admin) return res.status(403).json({ success: false, error: 'Solo Nevora puede administrar empresas.' });
+  next();
+};
+router.use('/admin', authMiddleware, soloAdmin, adminRoutes);
 
 // Actualizar configuración del perfil del emisor
 router.put('/auth/config', authMiddleware, async (req: any, res: any) => {
@@ -179,7 +278,8 @@ router.put('/auth/config', authMiddleware, async (req: any, res: any) => {
         telefono: telefono !== undefined ? telefono : emisor.telefono,
         pwd_mh: pwdMh !== undefined ? pwdMh : emisor.pwd_mh,
         pwd_firmador: pwdFirmador !== undefined ? pwdFirmador : emisor.pwd_firmador,
-        dtes_visibles: dtesVisibles !== undefined ? dtesVisibles : emisor.dtes_visibles,
+        // Los documentos autorizados los define la resolución de Hacienda: los cambia Nevora, no la empresa
+        dtes_visibles: dtesVisibles !== undefined && emisor.es_admin ? dtesVisibles : emisor.dtes_visibles,
         ambiente: ambiente !== undefined ? ambiente : emisor.ambiente,
         cod_establecimiento_mh: codEstablecimientoMh !== undefined ? codEstablecimientoMh : emisor.cod_establecimiento_mh,
         cod_punto_venta_mh: codPuntoVentaMh !== undefined ? codPuntoVentaMh : emisor.cod_punto_venta_mh,

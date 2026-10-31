@@ -21,7 +21,8 @@ export async function firmarDocumento(nit: string, documentoJSON: any, pwdPri: s
     });
 
     if (response.data.status === 'ERROR') {
-      throw new Error(response.data.body);
+      const cuerpo = response.data.body;
+      throw new Error(typeof cuerpo === 'object' ? cuerpo?.mensaje || JSON.stringify(cuerpo) : cuerpo);
     }
 
     // El firmador retorna en body el documento firmado como string

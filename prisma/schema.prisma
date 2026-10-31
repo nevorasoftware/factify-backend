@@ -27,6 +27,11 @@ model Emisor {
   dtes_visibles          Json?
   password               String?      @db.VarChar(255)
   logo_url               String?      @db.Text
+  es_admin               Boolean      @default(false)
+  activo                 Boolean      @default(true)
+  sesiones_desde         DateTime?
+  tokens_cuenta          TokenCuenta[]
+  certificado            CertificadoEmisor?
   clientes               Cliente[]
   compras                Compra[]
   dtes                   DteEmitido[]
@@ -39,6 +44,34 @@ model Emisor {
   periodos_contables     PeriodoContable[]
 
   @@map("emisores")
+}
+
+// Enlaces de un solo uso para crear o recuperar la contraseña. Solo se guarda el hash del token.
+model TokenCuenta {
+  id         Int       @id @default(autoincrement())
+  emisor_id  Int
+  token_hash String    @unique @db.VarChar(64)
+  tipo       String    @db.VarChar(12)
+  expira_at  DateTime
+  usado_at   DateTime?
+  created_at DateTime  @default(now())
+  emisor     Emisor    @relation(fields: [emisor_id], references: [id], onDelete: Cascade)
+
+  @@index([emisor_id])
+  @@map("tokens_cuenta")
+}
+
+// Certificado de Hacienda de cada empresa, cifrado. El firmador lo descarga por la red privada.
+model CertificadoEmisor {
+  id         Int       @id @default(autoincrement())
+  emisor_id  Int       @unique
+  contenido  String    @db.Text
+  huella     String    @db.VarChar(16)
+  vence_at   DateTime?
+  cargado_at DateTime  @default(now())
+  emisor     Emisor    @relation(fields: [emisor_id], references: [id], onDelete: Cascade)
+
+  @@map("certificados_emisor")
 }
 
 model Cliente {

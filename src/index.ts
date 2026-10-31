@@ -5,6 +5,9 @@ import routes from './routes/index.routes';
 const app = express();
 const port = process.env.PORT || 4001;
 
+// Railway antepone un proxy: sin esto, todas las peticiones parecen venir de la misma IP
+app.set('trust proxy', 1);
+
 // Middleware
 // CORS_ORIGINS: frontends autorizados, separados por comas. Sin definir queda abierto.
 const origenes = (process.env.CORS_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean);
