@@ -64,7 +64,7 @@ export async function getMHToken(emisor: { nit: string; pwd_mh: string; ambiente
     
     if (status && status >= 500) {
       throw new Error(`El servidor del Ministerio de Hacienda experimentó un error temporal (HTTP ${status}). Por favor, intenta de nuevo en unos momentos.`);
-    } else if (error.code || !error.response) {
+    } else if (axios.isAxiosError(error) && !error.response) {
       throw new Error(`No se pudo conectar con el servidor del Ministerio de Hacienda (Error de red: ${error.message}). Verifica tu conexión o el estado de los servidores de MH.`);
     }
     
