@@ -327,6 +327,7 @@ export function guardarCompraDe(emisorId: number): GuardarCompra {
           sello_recepcion: datos.sello,
           ambiente: datos.ambiente,
           observacion: datos.observacion,
+          ...datos.desglose,
           items: { create: datos.items },
           archivos: { create: adjuntos }
         }

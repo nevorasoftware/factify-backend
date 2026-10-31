@@ -2,7 +2,9 @@
 // El archivo viene de un remitente cualquiera: nada de su contenido se da por válido sin revisarlo.
 
 const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-const TIPOS_COMPRA = ['01', '03', '05', '06'];
+// El 07 no es una compra: es la retención que un agente le hizo al emisor y se declara en el F-07 (casilla 162).
+export const TIPO_RETENCION_RECIBIDA = '07';
+const TIPOS_COMPRA = ['01', '03', '05', '06', TIPO_RETENCION_RECIBIDA];
 const CONTENEDORES = ['dteJson', 'jsonDte', 'dteFirmado', 'dte', 'documento', 'json', 'data', 'body'];
 const RESPUESTAS = ['respuestaHacienda', 'respuestaMH', 'respuestaMh', 'responseMH', 'respuesta', 'resultado', 'hacienda'];
 
@@ -18,7 +20,16 @@ export interface ItemCompra {
   total: number;
 }
 
+export interface Desglose {
+  gravada: number;
+  exenta: number;
+  iva: number;
+  iva_percibido: number;
+  iva_retenido: number;
+}
+
 export interface DatosCompra {
+  desglose: Desglose;
   codigoGeneracion: string;
   numeroControl: string;
   tipoDte: string;
@@ -102,6 +113,29 @@ function itemsDe(cuerpo: any): ItemCompra[] {
   }));
 }
 
+export function desgloseDte(dte: any): Desglose {
+  const r = dte?.resumen || {};
+  if (dte?.identificacion?.tipoDte === TIPO_RETENCION_RECIBIDA) {
+    // Solo la retención del 1% (código 22) corresponde a la casilla 162
+    const lineas = (Array.isArray(dte.cuerpoDocumento) ? dte.cuerpoDocumento : []).filter((l: any) => l?.codigoRetencionMH === '22');
+    return {
+      gravada: redondear(lineas.reduce((a: number, l: any) => a + numero(l.montoSujetoGrav), 0)),
+      exenta: 0,
+      iva: 0,
+      iva_percibido: 0,
+      iva_retenido: redondear(lineas.reduce((a: number, l: any) => a + numero(l.ivaRetenido), 0))
+    };
+  }
+  const tributoIva = Array.isArray(r.tributos) ? r.tributos.find((t: any) => t?.codigo === '20') : null;
+  return {
+    gravada: redondear(numero(r.totalGravada)),
+    exenta: redondear(numero(r.totalExenta) + numero(r.totalNoSuj)),
+    iva: redondear(numero(tributoIva?.valor ?? r.totalIva)),
+    iva_percibido: redondear(numero(r.ivaPerci1)),
+    iva_retenido: redondear(numero(r.ivaRete1))
+  };
+}
+
 export function evaluarCompra(leido: DteLeido, emisor: { nit: string; ambiente?: string | null }): Evaluacion {
   const { dte, sello } = leido;
   const id = dte.identificacion;
@@ -121,7 +155,7 @@ export function evaluarCompra(leido: DteLeido, emisor: { nit: string; ambiente?:
   if (documentoReceptor && documentoReceptor !== nitEmisor) return { ok: false, motivo: 'El documento está dirigido a otra persona o empresa.' };
   if (!documentoReceptor && id.tipoDte !== '01') return { ok: false, motivo: 'El documento no identifica al comprador.' };
 
-  const monto = Number(dte.resumen?.totalPagar ?? dte.resumen?.montoTotalOperacion);
+  const monto = Number(dte.resumen?.totalPagar ?? dte.resumen?.montoTotalOperacion ?? dte.resumen?.totalIvaRetenido);
   if (!Number.isFinite(monto) || monto < 0) return { ok: false, motivo: 'El documento no indica un monto válido.' };
 
   const observaciones = [
@@ -132,6 +166,7 @@ export function evaluarCompra(leido: DteLeido, emisor: { nit: string; ambiente?:
   return {
     ok: true,
     compra: {
+      desglose: desgloseDte(dte),
       codigoGeneracion: id.codigoGeneracion.toLowerCase(),
       numeroControl: id.numeroControl.slice(0, 50),
       tipoDte: id.tipoDte,

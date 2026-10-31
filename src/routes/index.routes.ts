@@ -16,6 +16,8 @@ import { enviarCorreoDte, enviarCorreoConMotivo } from '../services/email.servic
 import { enviarWhatsappDteApi } from '../services/whatsapp.service';
 import { cifradoDisponible, cifrar } from '../utils/cifrado';
 import { ConexionCorreoError, ejecutarImportacion, importacionVencida, probarConexion, servidorSugerido } from '../services/correo-compras.service';
+import { TIPO_RETENCION_RECIBIDA } from '../services/compra-dte.service';
+import { actualizarDatosContables, archivoAnexo, ContabilidadError, guardarAjustes, guardarConfiguracion, obtenerConfiguracion, reporteDelPeriodo } from '../services/contabilidad.service';
 
 const router = Router();
 
@@ -1648,6 +1650,7 @@ router.get('/compras', authMiddleware, async (req: any, res: any) => {
     const compras = await prisma.compra.findMany({
       where: {
         emisor_id: emisorDb.id,
+        tipo_documento: { not: TIPO_RETENCION_RECIBIDA },
         // En producción no se mezclan documentos de pruebas leídos antes del cambio de ambiente
         ...(emisorDb.ambiente === '01' ? { NOT: { ambiente: '00' } } : {})
       },
@@ -1846,6 +1849,48 @@ router.post('/compras', authMiddleware, async (req: any, res: any) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// =========================================================================
+// CONTABILIDAD: LIBROS DE IVA Y PAGO A CUENTA (Tenant-Safe)
+// =========================================================================
+const responderContabilidad = (accion: (req: any, res: any) => Promise<void>) => async (req: any, res: any) => {
+  try {
+    await accion(req, res);
+  } catch (error: any) {
+    if (error instanceof ContabilidadError) return res.status(422).json({ success: false, error: error.message });
+    console.error('Error en contabilidad:', error);
+    res.status(500).json({ success: false, error: 'No se pudo procesar la información contable.' });
+  }
+};
+
+router.get('/contabilidad/configuracion', authMiddleware, responderContabilidad(async (req, res) => {
+  res.json({ success: true, configuracion: await obtenerConfiguracion(req.emisor.id) });
+}));
+
+router.put('/contabilidad/configuracion', authMiddleware, responderContabilidad(async (req, res) => {
+  res.json({ success: true, configuracion: await guardarConfiguracion(req.emisor.id, req.body) });
+}));
+
+router.get('/contabilidad/:periodo', authMiddleware, responderContabilidad(async (req, res) => {
+  res.json({ success: true, ...(await reporteDelPeriodo(req.emisor, req.params.periodo)) });
+}));
+
+router.put('/contabilidad/:periodo/ajustes', authMiddleware, responderContabilidad(async (req, res) => {
+  await guardarAjustes(req.emisor.id, req.params.periodo, req.body);
+  res.json({ success: true });
+}));
+
+router.get('/contabilidad/:periodo/anexos/:anexo', authMiddleware, responderContabilidad(async (req, res) => {
+  const { nombre, contenido } = await archivoAnexo(req.emisor, req.params.periodo, req.params.anexo);
+  res.setHeader('Content-Type', 'text/csv; charset=windows-1252');
+  res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+  res.send(contenido);
+}));
+
+router.put('/compras/:id/contable', authMiddleware, responderContabilidad(async (req, res) => {
+  await actualizarDatosContables(req.emisor.id, Number(req.params.id) || 0, req.body);
+  res.json({ success: true });
+}));
 
 // =========================================================================
 // RUTA PARA OBTENER INFORMACIÓN DE UN DTE RELACIONADO (Tenant-Safe)
